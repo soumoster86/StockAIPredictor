@@ -1,18 +1,5 @@
-# =============================
-# requirements.txt
-# (deploy-ready for Streamlit Community Cloud)
-# =============================
-# CPU-only PyTorch: the default PyPI torch on Linux bundles CUDA libraries
-# (several GB), which can blow Community Cloud's resource limits. The line
-# below pulls the small CPU wheel instead. If installing locally on macOS
-# fails on the +cpu pin, remove the next two lines and just use: torch>=2.0
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.5.1+cpu
-
-streamlit>=1.30
-pandas>=2.0
-numpy>=1.26
-yfinance>=0.2.50
-scikit-learn>=1.3
-xgboost>=2.0
-plotly>=5.18
+streamlit
+pandas
+openpyxl
+matplotlib
+python-dotenv
