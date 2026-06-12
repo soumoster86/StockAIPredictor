@@ -102,24 +102,24 @@ def load_stock_list(file_or_path):
     return dict(zip(df["name"].str.strip(), df["symbol"].str.strip().str.upper()))
 
 
-@st.cache_data(ttl=3600, show_spinner="Downloading price data...")
+@st.cache_data(ttl=3600, max_entries=20, show_spinner="Downloading price data...")
 def get_data(symbol):
     return fetch_data(symbol)
 
 
-@st.cache_resource(ttl=3600, show_spinner="Training model...")
+@st.cache_resource(ttl=3600, max_entries=4, show_spinner="Training model...")
 def get_trained(symbol, model_type, calibrate):
     data = add_features(get_data(symbol))
     return (data,) + train_model(data, model_type, calibrate)
 
 
-@st.cache_data(ttl=3600, show_spinner="Training one model per horizon (1/3/5/10/20 days)...")
+@st.cache_data(ttl=3600, max_entries=4, show_spinner="Training one model per horizon (1/3/5/10/20 days)...")
 def get_horizons(symbol, model_type):
     data = add_features(get_data(symbol))
     return multi_horizon_forecast(data, model_type)
 
 
-@st.cache_data(ttl=3600, show_spinner="Running walk-forward validation (trains one model per fold)...")
+@st.cache_data(ttl=3600, max_entries=2, show_spinner="Running walk-forward validation (trains one model per fold)...")
 def run_walk_forward(symbol, model_type, calibrate):
     data = add_features(get_data(symbol))
     return walk_forward(data, model_type, calibrate=calibrate)
