@@ -6,6 +6,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.isotonic import IsotonicRegression
 from sklearn.preprocessing import StandardScaler
 
 try:
@@ -196,6 +197,66 @@ class SequencePredictor:
         return float(_sigmoid_probs(self.model, X_t)[0])
 
 
+class CalibratedPredictor:
+    """Wraps any predictor and remaps its probabilities through an isotonic
+    regression fitted on validation data — so '70%' means what it says.
+    Everything else (window, member votes) delegates to the base predictor."""
+
+    def __init__(self, base, iso):
+        self.base = base
+        self.iso = iso
+        self.window = getattr(base, 'window', 1)
+        self.name = f"{base.name} (calibrated)"
+
+    def _map(self, p):
+        p = np.asarray(p, dtype=float)
+        out = np.full_like(p, np.nan)
+        m = np.isfinite(p)
+        out[m] = self.iso.predict(p[m])
+        return out
+
+    def fit(self, *args, **kwargs):
+        return self
+
+    def predict_all(self, Xs):
+        return self._map(self.base.predict_all(Xs))
+
+    def predict_last(self, Xs):
+        return float(self.iso.predict([self.base.predict_last(Xs)])[0])
+
+    def __getattr__(self, item):  # delegate e.g. member_probs_last
+        return getattr(self.base, item)
+
+
+def calibration_metrics(probs, y, n_bins=8):
+    """Reliability data: do stated probabilities match observed frequencies?
+    Returns Brier score (lower = better; squared error of the probabilities),
+    the Brier of always predicting the base rate (the score to beat),
+    expected calibration error (avg gap between stated and actual, weighted
+    by bin size), and the per-bin curve for plotting."""
+    probs = np.asarray(probs, dtype=float)
+    y = np.asarray(y, dtype=float)
+    m = np.isfinite(probs)
+    probs, y = probs[m], y[m]
+
+    brier = float(np.mean((probs - y) ** 2))
+    base_rate = float(y.mean())
+    brier_baseline = float(np.mean((base_rate - y) ** 2))
+
+    df = pd.DataFrame({'p': probs, 'y': y})
+    try:
+        df['bin'] = pd.qcut(df['p'], n_bins, duplicates='drop')
+    except ValueError:
+        df['bin'] = 0
+    curve = (df.groupby('bin', observed=True)
+               .agg(predicted=('p', 'mean'), actual=('y', 'mean'), count=('y', 'size'))
+               .reset_index(drop=True))
+    ece = float(np.sum(curve['count'] / len(df) * np.abs(curve['predicted'] - curve['actual'])))
+
+    return {'brier': brier, 'brier_baseline': brier_baseline, 'ece': ece,
+            'curve': curve.to_dict('records'), 'base_rate': base_rate}
+
+
 def make_predictor(model_type):
     if model_type.startswith("Ensemble"):
         members = [
@@ -319,11 +380,12 @@ def _masked(data, target_col):
 # Main entry points
 # =====================================================================
 
-def train_model(data, model_type="Neural Network"):
+def train_model(data, model_type="Neural Network", calibrate=False):
     """1-day model of the chosen type. Chronological 64/16/20 split;
     scaler fit on train only; thresholds tuned on validation; metrics
-    from the untouched test slice. Returns probabilities (not tensors)
-    so every model type flows through the same backtest."""
+    from the untouched test slice. With calibrate=True, an isotonic
+    regression fitted on the validation slice remaps probabilities so
+    they match observed frequencies."""
     X, y, dates = _masked(data, 'Target_1')
     n = len(X)
     if n < 300:
@@ -342,6 +404,14 @@ def train_model(data, model_type="Neural Network"):
     predictor = make_predictor(model_type).fit(Xs, y, train_end)
     all_probs = predictor.predict_all(Xs)
 
+    if calibrate:
+        raw_val = all_probs[train_end:val_end]
+        v_m = np.isfinite(raw_val)
+        iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
+        iso.fit(raw_val[v_m], y[train_end:val_end][v_m])
+        predictor = CalibratedPredictor(predictor, iso)
+        all_probs = predictor._map(all_probs)
+
     val_probs = all_probs[train_end:val_end]
     val_rets = next_ret[train_end:val_end]
     mask = np.isfinite(val_rets) & np.isfinite(val_probs)
@@ -350,6 +420,8 @@ def train_model(data, model_type="Neural Network"):
     test_probs = all_probs[val_end:]
     metrics = _classification_metrics(test_probs, y[val_end:])
     metrics['entry_threshold'], metrics['exit_threshold'] = thresholds
+    metrics['calibration'] = calibration_metrics(test_probs, y[val_end:])
+    metrics['calibrated'] = bool(calibrate)
 
     return predictor, scaler, metrics, test_probs, thresholds, dates[val_end:]
 
@@ -445,7 +517,8 @@ def backtest(test_probs, prices, test_index, thresholds=DEFAULT_THRESHOLDS):
     return stats, equity, buy_hold
 
 
-def walk_forward(data, model_type="Neural Network", n_splits=4, min_train=300):
+def walk_forward(data, model_type="Neural Network", n_splits=4, min_train=300,
+                 calibrate=False):
     """Expanding-window walk-forward validation of the chosen model type."""
     X, y, dates = _masked(data, 'Target_1')
     n = len(X)
@@ -468,6 +541,14 @@ def walk_forward(data, model_type="Neural Network", n_splits=4, min_train=300):
 
         predictor = make_predictor(model_type).fit(Xs, y, fit_end)
         all_probs = predictor.predict_all(Xs)
+
+        if calibrate:
+            raw_val = all_probs[fit_end:train_total]
+            v_m0 = np.isfinite(raw_val)
+            iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
+            iso.fit(raw_val[v_m0], y[fit_end:train_total][v_m0])
+            predictor = CalibratedPredictor(predictor, iso)
+            all_probs = predictor._map(all_probs)
 
         val_probs = all_probs[fit_end:train_total]
         val_rets = next_ret[fit_end:train_total]
@@ -503,3 +584,111 @@ def walk_forward(data, model_type="Neural Network", n_splits=4, min_train=300):
         })
 
     return pd.DataFrame(rows)
+
+
+# =====================================================================
+# Trade planning (pure, no torch)
+# =====================================================================
+
+def find_support_resistance(data, lookback=252, swing_window=10, cluster_pct=0.015):
+    """Detect swing highs/lows over the past `lookback` days, merge levels
+    that sit within `cluster_pct` of each other, and return the nearest
+    support below and resistance above the current price.
+
+    A swing high is a day whose High is the highest within ±swing_window
+    days (and symmetrically for swing lows)."""
+    sub = data.tail(lookback)
+    price = float(data['Close'].iloc[-1])
+    w = 2 * swing_window + 1
+
+    swing_highs = sub['High'][
+        sub['High'] == sub['High'].rolling(w, center=True).max()
+    ].dropna().values
+    swing_lows = sub['Low'][
+        sub['Low'] == sub['Low'].rolling(w, center=True).min()
+    ].dropna().values
+
+    def cluster(levels):
+        merged = []
+        for lv in sorted(float(x) for x in levels):
+            if merged and (lv - merged[-1][-1]) / price < cluster_pct:
+                merged[-1].append(lv)
+            else:
+                merged.append([lv])
+        return [float(np.mean(g)) for g in merged]
+
+    support_levels = cluster(swing_lows)
+    resistance_levels = cluster(swing_highs)
+
+    return {
+        'support': max((l for l in support_levels if l < price), default=None),
+        'resistance': min((l for l in resistance_levels if l > price), default=None),
+        'support_levels': support_levels,
+        'resistance_levels': resistance_levels,
+        'price': price,
+    }
+
+
+def compute_trade_plan(data, support=None, resistance=None,
+                       atr_stop_mult=1.5, atr_target_mult=3.0, min_rr=1.5):
+    """ATR-based entry/stop/target for a long trade at the current price.
+
+    Stop: 1.5x ATR below entry — tightened to just below support when a
+    support level sits inside that band (structure beats formula).
+    Target: nearest resistance if it offers at least `min_rr` reward:risk,
+    otherwise 3x ATR above entry."""
+    entry = float(data['Close'].iloc[-1])
+    atr = float(data['ATR_pct'].iloc[-1]) * entry
+
+    stop = entry - atr_stop_mult * atr
+    stop_basis = f"{atr_stop_mult:.1f}× ATR below entry"
+    if support is not None and stop < support < entry:
+        stop = support * 0.995
+        stop_basis = "just below the nearest support"
+
+    risk_per_share = entry - stop
+
+    target = entry + atr_target_mult * atr
+    target_basis = f"{atr_target_mult:.1f}× ATR above entry"
+    if resistance is not None and resistance > entry:
+        rr_at_resistance = (resistance - entry) / risk_per_share
+        if rr_at_resistance >= min_rr:
+            target = resistance
+            target_basis = "the nearest resistance"
+
+    return {
+        'entry': entry,
+        'stop': float(stop),
+        'target': float(target),
+        'risk_per_share': float(risk_per_share),
+        'reward_risk': float((target - entry) / risk_per_share),
+        'atr': float(atr),
+        'stop_basis': stop_basis,
+        'target_basis': target_basis,
+    }
+
+
+def position_size(capital, risk_pct, entry, stop):
+    """How many shares to buy so that hitting the stop loses exactly
+    `risk_pct` of capital. The professional formula:
+        shares = (capital × risk%) / (entry − stop)
+    Capped so the position never costs more than the available capital."""
+    risk_amount = capital * risk_pct / 100.0
+    risk_per_share = entry - stop
+    if risk_per_share <= 0 or entry <= 0 or capital <= 0:
+        return None
+
+    shares = int(risk_amount // risk_per_share)
+    max_affordable = int(capital // entry)
+    capped = shares > max_affordable
+    shares = min(shares, max_affordable)
+
+    position_value = shares * entry
+    return {
+        'shares': shares,
+        'risk_amount': float(risk_amount),
+        'actual_risk': float(shares * risk_per_share),
+        'position_value': float(position_value),
+        'pct_of_capital': float(position_value / capital),
+        'capped_by_capital': capped,
+    }
