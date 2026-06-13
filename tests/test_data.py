@@ -83,3 +83,52 @@ def test_fetch_many_parses_batched_multiindex(monkeypatch_yf=None):
         assert all(df.empty for df in out2.values())  # total failure -> all empty
     finally:
         data_mod.yf.download = orig
+
+
+def test_clean_ohlcv_neutralizes_bad_tick_keeps_recovery():
+    from data import clean_ohlcv
+    idx = pd.bdate_range("2024-01-01", periods=7)
+    c = pd.Series([100, 101, 100, 500, 102, 103, 101], index=idx, dtype=float)
+    raw = pd.DataFrame({"Open": c, "High": c * 1.01, "Low": c * 0.99,
+                        "Close": c, "Volume": np.full(7, 1e6)}, index=idx)
+    cleaned = clean_ohlcv(raw)
+    assert cleaned["Close"].iloc[3] != 500          # spike neutralized
+    assert cleaned["Close"].iloc[4] == 102.0        # recovery preserved
+
+
+def test_clean_ohlcv_drops_nonpositive_and_repairs_bars():
+    from data import clean_ohlcv
+    idx = pd.bdate_range("2024-01-01", periods=5)
+    c = pd.Series([100, 0, 101, np.nan, 102], index=idx, dtype=float)
+    raw = pd.DataFrame({"Open": c, "High": c, "Low": c, "Close": c,
+                        "Volume": np.full(5, 1e6)}, index=idx)
+    assert len(clean_ohlcv(raw)) == 3               # 0 and NaN rows dropped
+
+    idx2 = pd.bdate_range("2024-01-01", periods=2)
+    bad = pd.DataFrame({"Open": [100, 100], "High": [101, 99],
+                        "Low": [99, 101], "Close": [100, 100],
+                        "Volume": [1e6, 1e6]}, index=idx2)
+    fixed = clean_ohlcv(bad)
+    assert (fixed["High"] >= fixed["Low"]).all()    # inverted bar repaired
+
+
+def test_clean_ohlcv_preserves_normal_volatility():
+    from data import clean_ohlcv
+    idx = pd.bdate_range("2024-01-01", periods=7)
+    normal = [100, 108, 99, 105, 110, 102, 107]     # real ±8% days
+    c = pd.Series(normal, index=idx, dtype=float)
+    raw = pd.DataFrame({"Open": c, "High": c * 1.01, "Low": c * 0.99,
+                        "Close": c, "Volume": np.full(7, 1e6)}, index=idx)
+    assert clean_ohlcv(raw)["Close"].tolist() == [float(x) for x in normal]
+
+
+def test_add_features_survives_injected_spike():
+    rng = np.random.default_rng(0)
+    idx = pd.bdate_range("2021-01-01", periods=700)
+    c = pd.Series(100 * np.exp(np.cumsum(rng.normal(0.0004, 0.014, 700))), index=idx)
+    c.iloc[300] *= 3.0                              # 200% bad spike
+    raw = pd.DataFrame({"Open": c, "High": c * 1.01, "Low": c * 0.99, "Close": c,
+                        "Volume": rng.integers(1e5, 5e6, 700).astype(float)}, index=idx)
+    d = add_features(raw)
+    assert int(d[FEATURES].isna().sum().sum()) == 0
+    assert d["Return"].abs().max() < 0.5            # spike didn't survive into features

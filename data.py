@@ -89,8 +89,60 @@ def fetch_index(symbol=INDEX_SYMBOL):
     return df['Close']
 
 
-def add_features(data, index_close=None):
+MAX_DAILY_MOVE = 0.50   # |close-to-close| beyond this is treated as a bad tick
+
+
+def clean_ohlcv(data, max_move=MAX_DAILY_MOVE):
+    """Defend the model from garbage input before any feature is computed.
+
+    Yahoo data occasionally contains bad ticks, unadjusted splits, or
+    zero/!positive prices that would silently distort every downstream
+    feature. This gate:
+      - drops rows with non-positive or missing OHLC prices,
+      - repairs obviously broken bars where High/Low don't bracket the
+        Open/Close (a data error, not a real bar),
+      - neutralizes implausible single-day jumps (> max_move, e.g. a 90%
+        gap from a bad print or an unadjusted split) by forward-filling
+        that day's close, so one bad number can't poison MA/RSI/returns.
+
+    Returns a cleaned copy. Conservative by design: it only touches values
+    that are not credibly real, never normal volatility."""
     data = data.copy()
+
+    price_cols = [c for c in ("Open", "High", "Low", "Close") if c in data.columns]
+    # Non-positive or missing prices are unusable -> drop the row.
+    valid = (data[price_cols] > 0).all(axis=1) & data[price_cols].notna().all(axis=1)
+    data = data[valid]
+    if data.empty:
+        return data
+
+    # Repair bars where High/Low fail to bracket Open/Close (pure data errors).
+    if {"High", "Low", "Open", "Close"}.issubset(data.columns):
+        data["High"] = data[["High", "Open", "Close"]].max(axis=1)
+        data["Low"] = data[["Low", "Open", "Close"]].min(axis=1)
+
+    # Neutralize implausible prices. Comparing only to the prior close
+    # double-flags a spike AND its recovery; instead compare each close to a
+    # robust local reference (centered rolling median), so only the genuine
+    # outlier is replaced. A >50% deviation on a single name is almost always
+    # a bad tick or unadjusted corporate action; real moves pass untouched.
+    if "Close" in data.columns and len(data) > 3:
+        c = data["Close"].astype(float)
+        ref = c.rolling(5, center=True, min_periods=1).median()
+        bad = (c / ref - 1).abs() > max_move
+        if bad.any():
+            fixed = c.copy()
+            fixed[bad] = np.nan
+            data["Close"] = fixed.ffill().bfill()
+
+    if "Volume" in data.columns:
+        data["Volume"] = data["Volume"].fillna(0).clip(lower=0)
+
+    return data
+
+
+def add_features(data, index_close=None):
+    data = clean_ohlcv(data)
     close = data['Close']
     high = data['High']
     low = data['Low']
