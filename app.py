@@ -13,6 +13,8 @@ from model import (
     multi_horizon_forecast, explain_prediction,
     compute_risk_score, rating_from_prob, MODEL_TYPES, HAS_XGB,
     find_support_resistance, compute_trade_plan, position_size, quick_scan,
+    global_model_available, load_global_model,
+    predict_with_global, multi_horizon_global,
 )
 from journal import (
     load_journal, append_signal, resolve_journal, scorecard,
@@ -102,6 +104,8 @@ HELP = {
     "scan_to_resistance": "How far the nearest ceiling sits above the current price. Small = close to a level where rallies have stalled before.",
     "refresh": "Clears all cached data and models, then reloads with the latest prices. Everything retrains on the next view, so the first load after refreshing is slow — use when you specifically need today's latest close.",
     "buys_only": "Hide HOLD and SELL screen calls to focus on names worth opening for full analysis. The summary counts above still reflect the full scan.",
+    "global_model": "When trained, the global model is one model fitted on the pooled history of all watchlist stocks (~50k+ rows) instead of ~1,200 for one stock — usually steadier, especially on stocks with short history. The app prefers it automatically; untick to force a fresh per-stock model and compare.",
+    "use_global": "A global model is available. Keep it on for pooled-data predictions, or untick to train a per-stock model on the fly and compare the two in the Walk-Forward tab.",
 }
 
 # Human-readable descriptions for the explainability panel
@@ -173,14 +177,36 @@ def get_data_batch(symbols):
 
 
 @st.cache_resource(ttl=3600, max_entries=4, show_spinner="Training model...")
-def get_trained(symbol, model_type, calibrate):
+def get_trained(symbol, model_type, calibrate, use_global):
     data = add_features(get_data(symbol), index_close=get_index())
+    if use_global:
+        bundle = load_global_model(1)
+        if bundle is not None:
+            try:
+                return (data,) + predict_with_global(data, bundle, calibrate)
+            except ValueError:
+                pass  # too little history -> fall through to per-stock
     return (data,) + train_model(data, model_type, calibrate)
 
 
 @st.cache_data(ttl=3600, max_entries=4, show_spinner="Training one model per horizon (1/3/5/10/20 days)...")
-def get_horizons(symbol, model_type):
+def get_horizons(symbol, model_type, use_global):
     data = add_features(get_data(symbol), index_close=get_index())
+    if use_global and global_model_available():
+        rows = multi_horizon_global(data)
+        if any(v is not None for v in rows.values()):
+            per_stock = None
+            ordered = []
+            for h, row in rows.items():
+                if row is not None:
+                    ordered.append(row)
+                else:  # gap-fill any missing horizon from the per-stock model
+                    if per_stock is None:
+                        per_stock = multi_horizon_forecast(data, model_type)
+                    match = per_stock[per_stock['Horizon'].str.startswith(str(h))]
+                    if not match.empty:
+                        ordered.append(match.iloc[0].to_dict())
+            return pd.DataFrame(ordered)
     return multi_horizon_forecast(data, model_type)
 
 
@@ -287,7 +313,21 @@ with st.sidebar:
 
     st.caption("NSE tickers end in **.NS**. Any Yahoo Finance symbol works in custom mode.")
 
-    model_type = st.selectbox("Model", MODEL_TYPES, index=0, help=HELP["model_type"])
+    # Global model: a single model pre-trained on the pooled history of the
+    # whole watchlist (Phase 1). Preferred automatically when present; the
+    # toggle only appears if the trained artifact is in the repo.
+    _has_global = global_model_available()
+    if _has_global:
+        use_global = st.checkbox("🌐 Use global model", value=True,
+                                 help=HELP["use_global"])
+    else:
+        use_global = False
+
+    model_type = st.selectbox("Model", MODEL_TYPES, index=0, help=HELP["model_type"],
+                              disabled=use_global)
+    if use_global:
+        st.caption("Model selector applies to the per-stock fallback only — "
+                   "untick the global model to use it.")
     if model_type.startswith("Ensemble") and not HAS_XGB:
         st.warning("xgboost is not installed — the ensemble will use NN + Random Forest only. "
                    "Run `pip install xgboost` to enable it.")
@@ -353,7 +393,7 @@ if len(raw) < 400:
     st.error("Not enough price history for this symbol (need roughly 2 years).")
     st.stop()
 
-data, predictor, scaler, metrics, test_probs, thresholds, test_index = get_trained(symbol, model_type, calibrate)
+data, predictor, scaler, metrics, test_probs, thresholds, test_index = get_trained(symbol, model_type, calibrate, use_global)
 entry_thr, exit_thr = thresholds
 
 # ---------- Header ----------
@@ -455,7 +495,7 @@ with tab_pred:
 
     # --- Multi-day predictions ---
     st.subheader("Multi-Day Outlook")
-    horizons_df = get_horizons(symbol, model_type)
+    horizons_df = get_horizons(symbol, model_type, use_global)
     if horizons_df.empty:
         st.info("Not enough history for multi-horizon forecasts.")
     else:
@@ -524,7 +564,11 @@ with tab_pred:
             if get_index() is not None else
             "⚠️ NIFTY data unavailable this session — market-context features are "
             "neutral; predictions still work, slightly less informed.")
-    st.caption(f"1-day model, measured on the untouched test slice. {_ctx} "
+    _src = ("🌐 **Global model** (trained on the pooled watchlist) — thresholds "
+            "and metrics are still computed on this stock's own history."
+            if metrics.get("source") == "global" else
+            f"Per-stock {model_type} model.")
+    st.caption(f"{_src} Measured on the untouched test slice. {_ctx} "
                "Hover the (?) icons for explanations.")
 
     cal = metrics.get('calibration')

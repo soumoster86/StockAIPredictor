@@ -774,16 +774,7 @@ def quick_scan(data, thresholds=DEFAULT_THRESHOLDS):
 
 # =====================================================================
 # Global model: one model trained on the pooled history of many stocks.
-# Trained OFFLINE by train_global.py, saved to disk, loaded by the app.
-#
-# Why pooling helps: ~1,200 rows/stock becomes ~125k rows across 100
-# stocks. The features are all scale-free (ratios, returns, RSI, relative
-# strength), so a cheap stock and an expensive one look the same to the
-# model — the precondition that makes cross-sectional pooling valid.
-#
-# "Improvement over time" = retraining on more REAL market history as it
-# accumulates (rerun the script monthly). NOT training on the model's own
-# predictions, which creates a self-agreement feedback loop.
+# (Phase 1 — trained offline by train_global.py, loaded here.)
 # =====================================================================
 
 GLOBAL_MODEL_DIR = "global_models"
@@ -791,17 +782,12 @@ GLOBAL_META_FILE = "global_meta.json"
 
 
 def pool_training_data(per_stock_frames, target_col):
-    """Stack many stocks' featured frames into one pooled (X, y) dataset.
-
-    `per_stock_frames` is {symbol: dataframe_from_add_features}. Rows whose
-    target is NaN (the look-ahead tail) are dropped per stock before pooling,
-    so no stock leaks its unknowable future. Returns (X, y, n_stocks)."""
     X_parts, y_parts, used = [], [], 0
     for sym, d in per_stock_frames.items():
         if d is None or d.empty or target_col not in d.columns:
             continue
         sub = d[d[target_col].notna()]
-        if len(sub) < 100:        # too little history to contribute
+        if len(sub) < 100:
             continue
         X_parts.append(sub[FEATURES].values)
         y_parts.append(sub[target_col].values.astype(float))
@@ -812,30 +798,19 @@ def pool_training_data(per_stock_frames, target_col):
 
 
 def train_global_predictor(per_stock_frames, target_col, model_type="Ensemble"):
-    """Fit ONE scaler + predictor on the pooled data for a single horizon.
-    Returns (predictor, scaler, metrics). Intended for offline use."""
     X, y, n_stocks = pool_training_data(per_stock_frames, target_col)
     if X is None or len(X) < 500:
         raise ValueError(f"Not enough pooled data for {target_col} "
                          f"({0 if X is None else len(X)} rows).")
-
-    # Chronology can't be preserved once stocks are stacked, so we hold out
-    # a random 20% for an honest pooled-validation read. (Per-stock walk-
-    # forward in the app remains the rigorous, leakage-free check.)
     rng = np.random.default_rng(SEED)
     idx = rng.permutation(len(X))
     split = int(len(X) * 0.8)
     tr, te = idx[:split], idx[split:]
-
     scaler = StandardScaler().fit(X[tr])
     Xs = scaler.transform(X)
-
     predictor = make_predictor(model_type)
-    # EnsemblePredictor.fit(Xs, y, train_end) trains members on rows[:train_end];
-    # reorder so the training rows sit first, then train_end = len(tr).
     order = np.concatenate([tr, te])
     predictor.fit(Xs[order], y[order], len(tr))
-
     test_probs = predictor.predict_all(Xs[te])
     metrics = _classification_metrics(test_probs, y[te])
     metrics["n_stocks"] = int(n_stocks)
@@ -844,8 +819,6 @@ def train_global_predictor(per_stock_frames, target_col, model_type="Ensemble"):
 
 
 def save_global_model(predictor, scaler, horizon, directory=GLOBAL_MODEL_DIR):
-    """Persist a trained global (predictor, scaler) for one horizon.
-    Torch members are saved via state_dict; trees via joblib pickling."""
     import os
     import joblib
     os.makedirs(directory, exist_ok=True)
@@ -856,8 +829,6 @@ def save_global_model(predictor, scaler, horizon, directory=GLOBAL_MODEL_DIR):
 
 
 def load_global_model(horizon, directory=GLOBAL_MODEL_DIR):
-    """Load a saved global model for one horizon, or None if absent/stale.
-    Returns None (never raises) so the app falls back to per-stock training."""
     import os
     import joblib
     path = os.path.join(directory, f"global_h{horizon}.joblib")
@@ -867,13 +838,101 @@ def load_global_model(horizon, directory=GLOBAL_MODEL_DIR):
         bundle = joblib.load(path)
     except Exception:
         return None
-    # Feature-set drift guard: a model trained on a different FEATURES list
-    # must not be used silently against current data.
     if list(bundle.get("features", [])) != list(FEATURES):
         return None
     return bundle
 
 
 def global_model_available(directory=GLOBAL_MODEL_DIR):
-    """True if at least the 1-day global model is present and current."""
     return load_global_model(1, directory) is not None
+
+
+# =====================================================================
+# Phase 2 — using the global model for a single stock.
+#
+# The global predictor + scaler are pre-trained (Phase 1). Here we apply
+# them to ONE stock: score its rows, then tune entry/exit thresholds on
+# THIS stock's own validation slice and report metrics on its untouched
+# test slice. So the global path returns the exact same tuple as
+# train_model() and flows through backtest/predict/explain unchanged —
+# only the model's *weights* come from the pooled training, not a fresh
+# per-stock fit. Thresholds and evaluation stay stock-specific.
+# =====================================================================
+
+def predict_with_global(data, bundle, calibrate=False):
+    """Drop-in replacement for train_model() that uses a loaded global
+    model instead of training a per-stock one. `bundle` is the dict from
+    load_global_model(1). Returns the same 6-tuple as train_model()."""
+    predictor = bundle["predictor"]
+    scaler = bundle["scaler"]
+
+    X, y, dates = _masked(data, 'Target_1')
+    n = len(X)
+    if n < 120:
+        raise ValueError("Need at least 120 rows to evaluate the global model.")
+
+    next_ret = data['Close'].pct_change().shift(-1).loc[dates].values
+
+    # Same chronological split as train_model, for honest thresholds/metrics.
+    test_n = int(n * 0.20)
+    val_n = int(n * 0.16)
+    val_end = n - test_n
+
+    Xs = scaler.transform(X)               # the global model's own scaler
+    all_probs = predictor.predict_all(Xs)
+
+    eval_predictor = predictor
+    if calibrate:
+        raw_val = all_probs[n - test_n - val_n:val_end]
+        v_m = np.isfinite(raw_val)
+        if v_m.sum() > 10:
+            iso = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds='clip')
+            iso.fit(raw_val[v_m], y[n - test_n - val_n:val_end][v_m])
+            eval_predictor = CalibratedPredictor(predictor, iso)
+            all_probs = eval_predictor._map(all_probs)
+
+    val_probs = all_probs[n - test_n - val_n:val_end]
+    val_rets = next_ret[n - test_n - val_n:val_end]
+    mask = np.isfinite(val_rets) & np.isfinite(val_probs)
+    thresholds = tune_thresholds(val_probs[mask], val_rets[mask])
+
+    test_probs = all_probs[val_end:]
+    metrics = _classification_metrics(test_probs, y[val_end:])
+    metrics['entry_threshold'], metrics['exit_threshold'] = thresholds
+    metrics['calibration'] = calibration_metrics(test_probs, y[val_end:])
+    metrics['calibrated'] = bool(calibrate)
+    metrics['source'] = 'global'
+
+    # Live signal: the global predictor already encodes all its training;
+    # no per-stock refit needed. Return it directly with its own scaler.
+    return eval_predictor, scaler, metrics, test_probs, thresholds, dates[val_end:]
+
+
+def multi_horizon_global(data, directory=GLOBAL_MODEL_DIR):
+    """Multi-horizon forecast using the saved global models, one per
+    horizon. Falls back to None for any horizon whose global model is
+    missing, so the caller can fill gaps with the per-stock path."""
+    rows = {}
+    Xsrc = data[FEATURES].values
+    for h in HORIZONS:
+        bundle = load_global_model(h, directory)
+        if bundle is None:
+            rows[h] = None
+            continue
+        X, y, _ = _masked(data, f'Target_{h}')
+        if len(X) < 80:
+            rows[h] = None
+            continue
+        scaler, predictor = bundle["scaler"], bundle["predictor"]
+        split = int(len(X) * 0.8)
+        test_probs = predictor.predict_all(scaler.transform(X))[split:]
+        cm = _classification_metrics(test_probs, y[split:])
+        prob = predictor.predict_last(scaler.transform(Xsrc))
+        rows[h] = {
+            'Horizon': f"{h} Day" if h == 1 else f"{h} Days",
+            'Probability Up': float(prob),
+            'Rating': rating_from_prob(prob),
+            'Test Accuracy': cm['accuracy'],
+            'Baseline': cm['baseline_accuracy'],
+        }
+    return rows
