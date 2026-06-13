@@ -161,27 +161,40 @@ def test_global_train_save_load_reproduces_predictions(tmp_path):
     frames = _pooled_frames()
     pred, scaler, met = train_global_predictor(frames, "Target_1", "Ensemble")
     assert 0 < met["accuracy"] < 1 and met["n_stocks"] == len(frames)
-
     save_global_model(pred, scaler, 1, directory=str(tmp_path))
     assert global_model_available(directory=str(tmp_path))
     bundle = load_global_model(1, directory=str(tmp_path))
     assert bundle is not None
-
     sample = next(iter(frames.values())).tail(5)[FEATURES].values
     p1 = pred.predict_all(scaler.transform(sample))
     p2 = bundle["predictor"].predict_all(bundle["scaler"].transform(sample))
-    assert _np.allclose(p1, p2)  # persistence: identical after reload
+    assert _np.allclose(p1, p2)
 
 
 def test_global_load_rejects_feature_drift_and_missing(tmp_path):
     import joblib
-    from model import (train_global_predictor, save_global_model,
-                       load_global_model)
+    from model import (train_global_predictor, save_global_model, load_global_model)
     frames = _pooled_frames()
     pred, scaler, _ = train_global_predictor(frames, "Target_1", "Ensemble")
     path = save_global_model(pred, scaler, 1, directory=str(tmp_path))
-    b = joblib.load(path)
-    b["features"] = b["features"][:-1]          # simulate FEATURES change
-    joblib.dump(b, path)
-    assert load_global_model(1, directory=str(tmp_path)) is None   # drift rejected
-    assert load_global_model(99, directory=str(tmp_path)) is None  # absent -> None
+    b = joblib.load(path); b["features"] = b["features"][:-1]; joblib.dump(b, path)
+    assert load_global_model(1, directory=str(tmp_path)) is None
+    assert load_global_model(99, directory=str(tmp_path)) is None
+
+
+def test_predict_with_global_matches_train_model_contract(tmp_path):
+    from model import (train_global_predictor, save_global_model,
+                       load_global_model, predict_with_global, predict,
+                       backtest, explain_prediction)
+    frames = _pooled_frames()
+    pred, scaler, _ = train_global_predictor(frames, "Target_1", "Ensemble")
+    save_global_model(pred, scaler, 1, directory=str(tmp_path))
+    bundle = load_global_model(1, directory=str(tmp_path))
+    stock = next(iter(frames.values()))
+    gp, gs, gmet, gtest, gthr, gidx = predict_with_global(stock, bundle)
+    assert hasattr(gp, "predict_last") and gmet["source"] == "global"
+    assert len(gthr) == 2 and len(gtest) == len(gidx)
+    sig, prob = predict(gp, gs, stock, gthr)
+    assert sig in ("BUY", "SELL", "HOLD") and 0 <= prob <= 1
+    stats, _, _ = backtest(gtest, stock["Close"], gidx, gthr)
+    assert "sharpe" in stats
