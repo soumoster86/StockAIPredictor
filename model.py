@@ -533,6 +533,63 @@ def backtest(test_probs, prices, test_index, thresholds=DEFAULT_THRESHOLDS):
     return stats, equity, buy_hold
 
 
+def random_signal_benchmark(test_probs, prices, test_index,
+                            thresholds=DEFAULT_THRESHOLDS, n_random=300, seed=SEED):
+    """Is the strategy's performance better than luck?
+
+    Generates `n_random` random long-only strategies that hold for the SAME
+    number of days as the real strategy (matched exposure), then reports
+    where the real strategy's Sharpe and total return fall within those
+    random distributions, as percentiles.
+
+    Matching exposure is the crux: a random strategy that trades more or
+    less than the model would be an unfair yardstick. We keep the count of
+    in-market days identical and only randomize WHICH days — so the only
+    thing being tested is signal quality, not activity level.
+
+    Returns a dict, or None if the strategy never takes a position."""
+    probs = np.asarray(test_probs, dtype=float)
+    next_returns = prices.pct_change().shift(-1)
+    rets = next_returns.loc[test_index].to_numpy()
+    valid = np.isfinite(rets) & np.isfinite(probs)
+    probs, rets = probs[valid], rets[valid]
+    n = len(rets)
+    if n < 20:
+        return None
+
+    real_pos = build_positions(probs, *thresholds)
+    n_in_market = int((real_pos == 1).sum())
+    if n_in_market == 0 or n_in_market == n:
+        return None  # nothing (or everything) held -> no meaningful comparison
+
+    real = performance_stats(real_pos, rets)
+    real_sharpe = real["sharpe"]
+    real_return = real["total_return"]
+
+    rng = np.random.default_rng(seed)
+    rand_sharpes = np.empty(n_random)
+    rand_returns = np.empty(n_random)
+    for i in range(n_random):
+        pos = np.zeros(n)
+        pos[rng.choice(n, size=n_in_market, replace=False)] = 1.0
+        s = performance_stats(pos, rets)
+        rand_sharpes[i] = s["sharpe"] if np.isfinite(s["sharpe"]) else 0.0
+        rand_returns[i] = s["total_return"]
+
+    rs = real_sharpe if np.isfinite(real_sharpe) else 0.0
+    return {
+        "real_sharpe": float(rs),
+        "real_return": float(real_return),
+        "sharpe_percentile": float((rand_sharpes < rs).mean() * 100),
+        "return_percentile": float((rand_returns < real_return).mean() * 100),
+        "rand_sharpes": rand_sharpes,
+        "rand_returns": rand_returns,
+        "n_random": n_random,
+        "exposure_days": n_in_market,
+        "total_days": n,
+    }
+
+
 def walk_forward(data, model_type="Neural Network", n_splits=4, min_train=300,
                  calibrate=False):
     """Expanding-window walk-forward validation of the chosen model type."""
@@ -659,17 +716,8 @@ def compute_trade_plan(data, support=None, resistance=None,
     stop = entry - atr_stop_mult * atr
     stop_basis = f"{atr_stop_mult:.1f}× ATR below entry"
     if support is not None and stop < support < entry:
-        candidate = support * 0.995
-        # Structure beats formula — but only if the resulting stop is still a
-        # sensible distance away. A support sitting almost exactly at entry
-        # would otherwise create a noise-tight stop (a fraction of ATR) that
-        # daily volatility is near-certain to trip, producing an absurd
-        # reward:risk. Floor the stop distance at 0.5x ATR.
-        min_dist = 0.5 * atr
-        if entry - candidate >= min_dist:
-            stop = candidate
-            stop_basis = "just below the nearest support"
-        # else: keep the 1.5x ATR stop — support is too close to be useful
+        stop = support * 0.995
+        stop_basis = "just below the nearest support"
 
     risk_per_share = entry - stop
 
