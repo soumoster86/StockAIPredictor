@@ -75,11 +75,27 @@ def require_login():
 
     users = _get_users()
 
-    _, mid, _ = st.columns([1, 1.2, 1])
-    with mid:
-        st.title("🔒 AI Stock Trend Predictor")
+    # ---- Hero header ----
+    st.markdown(
+        """
+        <div style="text-align:center; padding: 1.5rem 0 0.5rem 0;">
+            <div style="font-size:2.3rem; font-weight:800; letter-spacing:-0.02em;">
+                📈 AI Stock Trend Predictor
+            </div>
+            <div style="font-size:1.05rem; color: rgba(230,233,239,0.6);
+                        margin-top:0.25rem;">
+                Machine-learning powered stock analytics
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.divider()
 
-        if not users:
+    # ---- First-run setup gate (fail closed) ----
+    if not users:
+        _, mid, _ = st.columns([1, 2, 1])
+        with mid:
             st.error("No users configured — the app is locked by default.")
             st.markdown(
                 "**Setup (one time):**\n"
@@ -91,12 +107,46 @@ def require_login():
                 "⚠️ Never commit `secrets.toml` to git. On Streamlit Cloud, "
                 "paste the TOML into **Settings → Secrets** instead."
             )
-            st.stop()
+        st.stop()
 
+    # ---- Two-column hero: preview | login ----
+    left, right = st.columns([1.1, 1], gap="large")
+
+    with left:
+        st.markdown("#### What's inside")
+        features = [
+            ("📊", "Interactive Charts", "Candlesticks, moving averages, RSI"),
+            ("🤖", "AI Signals", "Ensemble of neural net, XGBoost & forests"),
+            ("📈", "Multi-Day Predictions", "1 / 3 / 5 / 10 / 20-day outlooks"),
+            ("📉", "Honest Backtesting", "Walk-forward validation vs. buy & hold"),
+            ("🎯", "Trade Planning", "Auto support/resistance, stops & sizing"),
+            ("📝", "Signal Journal", "Every call scored against real prices"),
+        ]
+        for icon, title, desc in features:
+            st.markdown(
+                f"""
+                <div style="display:flex; align-items:flex-start; gap:0.7rem;
+                            padding:0.55rem 0.7rem; margin-bottom:0.45rem;
+                            background:rgba(54,179,126,0.06);
+                            border-left:3px solid #36b37e; border-radius:6px;">
+                    <div style="font-size:1.4rem; line-height:1;">{icon}</div>
+                    <div>
+                        <div style="font-weight:600;">{title}</div>
+                        <div style="font-size:0.85rem; color:rgba(230,233,239,0.6);">
+                            {desc}</div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    with right:
+        st.markdown("#### 🔒 Secure Login")
         with st.form("login"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Log in", type="primary",
+            username = st.text_input("Username", placeholder="your username")
+            password = st.text_input("Password", type="password",
+                                      placeholder="your password")
+            submitted = st.form_submit_button("Access Dashboard ➜", type="primary",
                                               use_container_width=True)
 
         if submitted:
@@ -111,7 +161,25 @@ def require_login():
                 st.session_state["auth_attempts"] = attempts + 1
                 st.error("Invalid username or password.")
 
-        st.caption("Access is restricted. Contact the app owner for an account.")
+        st.caption("Access is restricted. Email **soumoster@gmail.com** "
+                   "to request credentials.")
+
+    # ---- Fixed footer ----
+    st.markdown(
+        """
+        <div style="
+            position: fixed; left: 0; bottom: 0; width: 100%;
+            text-align: center; padding: 0.6rem 1rem;
+            background: rgba(14, 17, 23, 0.92);
+            color: rgba(250, 250, 250, 0.6);
+            font-size: 0.8rem; z-index: 999;
+            border-top: 1px solid rgba(255,255,255,0.06);">
+            ⚠️ Educational purposes only — not financial advice &nbsp;·&nbsp;
+            © 2026 Soumoster Analytics
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.stop()
 

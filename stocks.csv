@@ -1,10 +1,8 @@
 Name,Symbol
 Reliance Industries,RELIANCE.NS
-Tata Consultancy Services,TCS.NS
 HDFC Bank,HDFCBANK.NS
 Infosys,INFY.NS
 ICICI Bank,ICICIBANK.NS
-Bharti Airtel,BHARTIARTL.NS
 State Bank of India,SBIN.NS
 Hindustan Unilever,HINDUNILVR.NS
 ITC,ITC.NS
@@ -32,16 +30,95 @@ HINDALCO,HINDALCO.NS
 Aditya Birla Sun Life AMC Limited,ABSLAMC.NS
 Adani Energy Solutions Limited,ADANIENSOL.NS
 Adani Green Energy Limited,ADANIGREEN.NS
-Affle 3i Limited,AFFLE.NS
-Alkem Laboratories Limited,ALKEM.NS
-Alkyl Amines Chemicals Limited,ALKYLAMINE.NS
-Allcargo Logistics Limited,ALLCARGO.NS
-Alldigi Tech Limited,ALLDIGI.NS
-All Time Plastics Limited,ALLTIME.NS
-Almondz Global Securities Limited,ALMONDZ.NS
-Alok Industries Limited,ALOKINDS.NS
-Alpa Laboratories Limited,ALPA.NS
-Alphageo (India) Limited,ALPHAGEO.NS
-Amagi Media Labs Limited,AMAGI.NS
-Apollo Micro Systems Limited,APOLLO.NS
-Astral Limited,ASTRAL.NS
+Emcure Pharmaceuticals Ltd,EMCURE.NS
+Coal India Ltd,COALINDIA.NS
+Ircon International Ltd,IRCON.NS
+UCO Bank,UCOBANK.NS
+Ujjivan Small Finance Bank Ltd,UJJIVANSFB.NS
+Power Grid Corporation of India Ltd,POWERGRID.NS
+Bank of Maharashtra,MAHABANK.NS
+Zensar Technologies Ltd,ZENSARTECH.NS
+Oil & Natural Gas Corpn Ltd,ONGC.NS
+RBL Bank Ltd,RBLBANK.NS
+Jubilant Foodworks Ltd,JUBLFOOD.NS
+Tata Power Company Ltd,TATAPOWER.NS
+Vedanta Ltd,VEDL.NS
+Angel One Nifty 50 ETF,AONENIFTY.NS
+Apollo Tyres,APOLLOTYRE.NS
+Ashok Leyland,ASHOKLEY.NS
+Bajaj Finance,BAJFINANCE.NS
+Nippon India ETF Nifty Bank BeES,BANKBEES.NS
+Bharat Electronics Limited,BEL.NS
+Bharti Airtel,BHARTIARTL.NS
+Bhel,BHEL.NS
+Biocon,BIOCON.NS
+Boat,BOAT.NS
+CDSL,CDSL.NS
+CG Power,CGPOWER.NS
+Canara Robeco Asset Management Cmpny Ltd,CRAMC.NS
+City Union Bank,CUB.NS
+Equitas Bank,EQUITASBNK.NS
+Federal Bank,FEDERALBNK.NS
+GM Airport Infra,GMRAIRPORT.NS
+Gold Bees,GOLDBEES.NS
+Groww Liquid Fund,GROWW.NS
+Hudco,HUDCO.NS
+IDFC,IDFCFIRSTB.NS
+Infra Bees,INFRABEES.NS
+Infosys,INFY.NS
+Inox Wind,INOXWIND.NS
+Indian Overseas Bank,IOB.NS
+IREDA,IREDA.NS
+IRFC,IRFC.NS
+ITC,ITC.NS
+ITC Hotels,ITCHOTELS.NS
+Jio Finance,JIOFIN.NS
+Junior Bees,JUNIORBEES.NS
+Liquid Bees,LIQUIDBEES.NS
+Liquid Case,LIQUIDCASE.NS
+" 
+Lloyds Metals And Energy Ltd",LLOYDSME.NS
+Marico,MARICO.NS
+Medanta,MEDANTA.NS
+Medi Assist,MEDIASSIST.NS
+Nippon India ETF Nifty Midcap 150,MID150BEES.NS
+MID 150 Case,MID150CASE.NS
+Mid Cap ETF,MIDCAPETF.NS
+Minda Corporation,MINDACORP.NS
+Motherson SUMI,MOTHERSON.NS
+National Aluminium,NATIONALUM.NS
+NBCC,NBCC.NS
+Netweb Technology,NETWEB.NS
+Network 18,NETWORK18.NS
+ICICI Prudential Nifty Next 50 ETF,NEXT50IETF.NS
+ICICI Prudential Nifty 100 ETF,NIF100IETF.NS
+"
+Nippon India ETF Nifty 50 BeES",NIFTYBEES.NS
+Oil India Limited,OIL.NS
+Pennar Industries Ltd,PENIND.NS
+Power Finance Corporation Ltd,PFC.NS
+Nippon India Nifty Pharma ETF,PHARMABEES.NS
+Phoenix Mills Ltd,PHOENIXLTD.NS
+Piramal Finance Ltd,PIRAMALFIN.NS
+Power Grid Corporation of India Ltd,POWERGRID.NS
+TTK Prestige,PRESTIGE.NS
+Pricol Ltd,PRICOLLTD.NS
+Nippon India ETF Nifty PSU Bank BeES,PSUBNKBEES.NS
+Renuka Sugar,RENUKA.NS
+Steel Authority of India Limited,SAIL.NS
+State Bank of India,SBIN.NS
+Nippon India Silver ETF,SILVERBEES.NS
+SJS Enterprise,SJS.NS
+Southbank,SOUTHBANK.NS
+Surya Roshni Ltd,SURYAROSNI.NS
+Tata Steel Ltd,TATASTEEL.NS
+TATA CONSULTANCY SERVICES,TCS.NS
+Techno Electric & Engineering Cmpany Ltd,TECHNOE.NS
+Tata Motors Limited,TMCV.NS
+Tata Motors Passenger Vehicles Limited,TMPV.NS
+Zerodha Nifty 100 ETF,TOP100CASE.NS
+Updater Services Limited,UDS.NS
+Ujjivan Small Finance Bank,UJJIVANSFB.NS
+Varun Beverages,VBL.NS
+VA Tech Wabag Limited,WABAG.NS
+Zydus Lifesciences Limited,ZYDUSLIFE.NS

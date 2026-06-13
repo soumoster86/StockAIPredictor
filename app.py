@@ -7,12 +7,12 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from data import fetch_data, add_features, FEATURES
+from data import fetch_data, fetch_many, add_features, fetch_index, FEATURES
 from model import (
     train_model, predict, backtest, walk_forward,
     multi_horizon_forecast, explain_prediction,
     compute_risk_score, rating_from_prob, MODEL_TYPES, HAS_XGB,
-    find_support_resistance, compute_trade_plan, position_size,
+    find_support_resistance, compute_trade_plan, position_size, quick_scan,
 )
 from journal import (
     load_journal, append_signal, resolve_journal, scorecard,
@@ -26,6 +26,38 @@ current_user = require_login()  # everything below runs only when authenticated
 
 STOCKS_FILE = Path(__file__).parent / "stocks.csv"
 DEFAULT_STOCKS = {"Reliance Industries": "RELIANCE.NS", "Infosys": "INFY.NS"}
+
+# ---------- Table color semantics ----------
+GREEN, RED, AMBER = "#36b37e", "#ef553b", "#f4a62a"
+
+
+def _style_map(styler, func, subset):
+    """pandas renamed Styler.applymap -> Styler.map; support both."""
+    fn = getattr(styler, "map", None) or styler.applymap
+    return fn(func, subset=subset)
+
+
+def _color_signal(v):
+    return {"BUY": f"color: {GREEN}; font-weight: 600",
+            "SELL": f"color: {RED}; font-weight: 600",
+            "HOLD": f"color: {AMBER}"}.get(v, "")
+
+
+def _color_status(v):
+    return {"TARGET HIT": f"color: {GREEN}; font-weight: 600",
+            "STOP HIT": f"color: {RED}; font-weight: 600",
+            "EXPIRED": "color: #8a8f98",
+            "OPEN": "color: #4f9cf9"}.get(v, "")
+
+
+def _color_pos_neg(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return ""
+    if pd.isna(v) or v == 0:
+        return ""
+    return f"color: {GREEN}" if v > 0 else f"color: {RED}"
 
 # ---------------------------------------------------------------
 # Plain-language explanations, used as (?) tooltips
@@ -45,8 +77,8 @@ HELP = {
     "recall": "Of all days the price actually rose, how many the model caught. High recall = it doesn't miss rallies.",
     "rsi": "Relative Strength Index — a 0–100 speedometer of buying vs selling pressure. Above 70: possibly overbought. Below 30: possibly oversold.",
     "last_close": "Most recent closing price, with change vs the previous trading day.",
-    "prob_up": "The model's estimated chance that the price ends higher over this horizon. 50% = coin flip; further from 50% = more conviction.",
-    "rating": "Plain-language band for the probability: Strong Buy >80%, Buy 65–80%, Neutral 45–65%, Sell <45%.",
+    "prob_up": "The model's estimated chance that the price makes a meaningful up move over this horizon. 50% = coin flip; further from 50% = more conviction.",
+    "rating": "Fixed probability band: Strong Buy >80%, Buy 65–80%, Neutral 45–65%, Sell <45%. This is separate from the trading signal, which uses tuned entry/exit thresholds.",
     "risk_score": "1 (calm) to 10 (wild), blending the stock's volatility, daily trading range, and worst fall of the past year. Higher risk = consider a smaller position size.",
     "horizon_accuracy": "Each horizon has its own model, tested on recent data it never trained on. Longer horizons overlap heavily, so treat their accuracy as optimistic.",
     "model_type": "Ensemble averages a neural network, XGBoost and a Random Forest — usually the most reliable choice. LSTM/GRU read the last 20 days as a sequence instead of one day at a time; slower to train and rarely better on this little data, but worth comparing in the Walk-Forward tab.",
@@ -65,6 +97,11 @@ HELP = {
     "journal": "Backtests look backward; the journal looks forward. Each logged signal is later scored against what the market actually did — the most honest performance measure this app produces.",
     "target_rate": "Of resolved BUY plans, the share that reached the target before hitting the stop.",
     "journal_status": "TARGET HIT / STOP HIT: which level the price touched first. EXPIRED: neither within 20 trading days — scored at that day's close. OPEN: still running.",
+    "scanner": "A quick screen across the whole watchlist using a fast tree model with default thresholds — built to rank, not to decide. Open any stock from the sidebar for the full analysis signal.",
+    "scan_to_support": "How far the current price sits above its nearest support level. Small = near a floor that has held before; negative would mean below all detected supports.",
+    "scan_to_resistance": "How far the nearest ceiling sits above the current price. Small = close to a level where rallies have stalled before.",
+    "refresh": "Clears all cached data and models, then reloads with the latest prices. Everything retrains on the next view, so the first load after refreshing is slow — use when you specifically need today's latest close.",
+    "buys_only": "Hide HOLD and SELL screen calls to focus on names worth opening for full analysis. The summary counts above still reflect the full scan.",
 }
 
 # Human-readable descriptions for the explainability panel
@@ -89,6 +126,16 @@ def describe_feature(feat, value):
         return f"Daily volatility at {value:.2%}" + (" (elevated)" if value > 0.02 else "")
     if feat == 'ATR_pct':
         return f"Daily trading range {value:.2%} of price"
+    if feat == 'Nifty_Ret':
+        return f"NIFTY moved {value:+.1%} yesterday"
+    if feat == 'Nifty_Mom20':
+        return f"NIFTY 20-day trend: {value:+.1%}"
+    if feat == 'Rel_Str5':
+        side = "Outperforming" if value > 0 else "Underperforming"
+        return f"{side} NIFTY by {abs(value):.1%} over 5 days"
+    if feat == 'Rel_Str20':
+        side = "Outperforming" if value > 0 else "Underperforming"
+        return f"{side} NIFTY by {abs(value):.1%} over 20 days"
     return f"{feat}: {value:.3f}"
 
 
@@ -99,7 +146,12 @@ def load_stock_list(file_or_path):
     if not {"name", "symbol"}.issubset(df.columns):
         raise ValueError("CSV must have 'Name' and 'Symbol' columns.")
     df = df.dropna(subset=["name", "symbol"])
-    return dict(zip(df["name"].str.strip(), df["symbol"].str.strip().str.upper()))
+    df["name"] = df["name"].astype(str).str.strip()
+    df["symbol"] = df["symbol"].astype(str).str.strip().str.upper()
+    # One entry per symbol AND per name — duplicate rows in the CSV would
+    # otherwise produce duplicate scan rows and duplicate widget keys.
+    df = df.drop_duplicates(subset=["symbol"]).drop_duplicates(subset=["name"])
+    return dict(zip(df["name"], df["symbol"]))
 
 
 @st.cache_data(ttl=3600, max_entries=20, show_spinner="Downloading price data...")
@@ -107,22 +159,81 @@ def get_data(symbol):
     return fetch_data(symbol)
 
 
+@st.cache_data(ttl=3600, max_entries=1, show_spinner=False)
+def get_index():
+    """NIFTY Close series for market-context features (None if unavailable)."""
+    return fetch_index()
+
+
+@st.cache_data(ttl=3600, max_entries=2, show_spinner="Downloading watchlist data (one batched request)...")
+def get_data_batch(symbols):
+    """Whole-watchlist price data in one batched request — far more
+    rate-limit resistant than per-symbol fetches from a shared cloud IP."""
+    return fetch_many(list(symbols))
+
+
 @st.cache_resource(ttl=3600, max_entries=4, show_spinner="Training model...")
 def get_trained(symbol, model_type, calibrate):
-    data = add_features(get_data(symbol))
+    data = add_features(get_data(symbol), index_close=get_index())
     return (data,) + train_model(data, model_type, calibrate)
 
 
 @st.cache_data(ttl=3600, max_entries=4, show_spinner="Training one model per horizon (1/3/5/10/20 days)...")
 def get_horizons(symbol, model_type):
-    data = add_features(get_data(symbol))
+    data = add_features(get_data(symbol), index_close=get_index())
     return multi_horizon_forecast(data, model_type)
 
 
 @st.cache_data(ttl=3600, max_entries=2, show_spinner="Running walk-forward validation (trains one model per fold)...")
 def run_walk_forward(symbol, model_type, calibrate):
-    data = add_features(get_data(symbol))
+    data = add_features(get_data(symbol), index_close=get_index())
     return walk_forward(data, model_type, calibrate=calibrate)
+
+
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+def run_scan(stock_items):
+    """Scan the whole watchlist with the fast model. Cached for an hour;
+    the progress bar only shows on the first (uncached) run."""
+    rows, failures = [], []
+    seen = set()
+    batch = get_data_batch(tuple(sym for _, sym in stock_items))
+    progress = st.progress(0.0, text="Scanning watchlist...")
+    for i, (name, sym) in enumerate(stock_items):
+        progress.progress((i + 1) / len(stock_items), text=f"Scanning {sym}...")
+        if sym in seen:
+            continue
+        seen.add(sym)
+        try:
+            raw = batch.get(sym, pd.DataFrame())
+            if raw.empty or len(raw) < 400:
+                failures.append((sym, "no/short data"))
+                continue
+            d = add_features(raw, index_close=get_index())
+            scan = quick_scan(d)
+            if scan is None:
+                failures.append((sym, "too little history"))
+                continue
+            r = compute_risk_score(d)
+            s = find_support_resistance(d)
+            price = float(d['Close'].iloc[-1])
+            prev = float(d['Close'].iloc[-2])
+            rows.append({
+                "Name": name, "Symbol": sym,
+                "Price": price, "Day": price / prev - 1,
+                "Screen": scan['signal'], "Probability Up": scan['probability'],
+                "Rating": scan['rating'],
+                "Test Acc": scan['accuracy'], "Baseline": scan['baseline'],
+                "Risk": r['score'],
+                "To Support": (price / s['support'] - 1) if s['support'] else None,
+                "To Resistance": (s['resistance'] / price - 1) if s['resistance'] else None,
+            })
+        except Exception as e:
+            failures.append((sym, str(e)[:60]))
+    progress.empty()
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("Probability Up", ascending=False).reset_index(drop=True)
+    return df, failures
 
 
 # ---------- Sidebar ----------
@@ -154,9 +265,16 @@ with st.sidebar:
 
     st.caption(f"Showing {list_source}. Edit `stocks.csv` next to app.py to change the default list.")
 
+    # Keyed selectbox so the sidebar screener can jump to a stock; guard
+    # against a stored choice that no longer exists (e.g. new watchlist).
+    _options = list(stocks.keys()) + ["Custom symbol…"]
+    if st.session_state.get("stock_choice") not in _options:
+        st.session_state.pop("stock_choice", None)
+
     choice = st.selectbox(
         "Select a stock",
-        options=list(stocks.keys()) + ["Custom symbol…"],
+        options=_options,
+        key="stock_choice",
         help="Type to search the list. Pick 'Custom symbol…' for any other ticker.",
     )
 
@@ -178,6 +296,39 @@ with st.sidebar:
                    "Training takes a little longer.")
 
     calibrate = st.checkbox("Calibrate probabilities", value=False, help=HELP["calibrate"])
+
+    if st.button("🔄 Refresh data", use_container_width=True, help=HELP["refresh"]):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.session_state.pop("scan_requested", None)
+        st.toast("Caches cleared — reloading with fresh data…", icon="🔄")
+        st.rerun()
+
+    def _jump_to(stock_name):
+        """Callback: select this stock app-wide (runs before next rerun)."""
+        st.session_state["stock_choice"] = stock_name
+
+    with st.expander("🔍 Screener — top screens", expanded=False):
+        if st.button("Scan watchlist", key="sidebar_scan",
+                     use_container_width=True, help=HELP["scanner"]):
+            st.session_state["scan_requested"] = True
+
+        if st.session_state.get("scan_requested"):
+            side_df, _side_fails = run_scan(tuple(stocks.items()))
+            if side_df.empty:
+                st.caption("No results — see the Scanner tab for details.")
+            else:
+                _icons = {"BUY": "🟢", "SELL": "🔴", "HOLD": "⏸️"}
+                for _i, (_, row) in enumerate(side_df.head(5).iterrows()):
+                    st.button(
+                        f"{_icons.get(row['Screen'], '⏸️')} {row['Symbol']} · "
+                        f"{row['Probability Up'] * 100:.0f}%",
+                        key=f"jump_{_i}",  # positional: immune to duplicate symbols
+                        on_click=_jump_to, args=(row["Name"],),
+                        use_container_width=True,
+                    )
+                st.caption("Top 5 screen results by probability — tap to run the full analysis. "
+                           "Full ranked table in the 🔍 Scanner tab.")
 
     with st.expander("ℹ️ How this app works"):
         st.markdown(
@@ -239,10 +390,24 @@ with head_l:
 with head_r:
     st.metric("Last Close", f"{currency}{last_close:,.2f}", delta=f"{day_change:+.2f}%",
               help=HELP["last_close"])
+    _spark = data['Close'].tail(30)
+    _spark_fig = go.Figure(go.Scatter(
+        x=_spark.index, y=_spark.values, mode="lines",
+        line=dict(width=2, color=GREEN if day_change >= 0 else RED),
+        hoverinfo="skip"))
+    _spark_fig.update_layout(
+        height=70, margin=dict(l=0, r=0, t=0, b=0), showlegend=False,
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+    st.plotly_chart(_spark_fig, use_container_width=True,
+                    config={"displayModeBar": False})
+    st.caption(f"30-day trend · data as of {data.index[-1]:%d %b %Y}")
 
 # ---------- Tabs ----------
-tab_pred, tab_plan, tab_back, tab_wf, tab_journal, tab_charts = st.tabs(
-    ["🔮 Prediction", "🎯 Trade Plan", "📊 Backtest", "🧪 Walk-Forward", "📝 Journal", "📉 Charts"]
+(tab_pred, tab_scan, tab_plan, tab_back, tab_wf,
+ tab_journal, tab_charts) = st.tabs(
+    ["🔮 Prediction", "🔍 Scanner", "🎯 Trade Plan", "📊 Backtest",
+     "🧪 Walk-Forward", "📝 Journal", "📉 Charts"]
 )
 
 with tab_pred:
@@ -254,7 +419,7 @@ with tab_pred:
             mode="gauge+number",
             value=confidence * 100,
             number={'suffix': "%", 'font': {'size': 40}},
-            title={'text': "Probability of an UP move (1 day)"},
+            title={'text': "Probability of a meaningful UP move (1 day)"},
             gauge={
                 'axis': {'range': [0, 100], 'ticksuffix': "%"},
                 'bar': {'color': "#2c3e50", 'thickness': 0.25},
@@ -268,12 +433,13 @@ with tab_pred:
         ))
         gauge.update_layout(height=260, margin=dict(l=30, r=30, t=60, b=10))
         st.plotly_chart(gauge, use_container_width=True)
-        st.caption("Bands: 🔴 Sell <45% · 🟠 Neutral 45–65% · 🟢 Buy 65–80% · 🟢🟢 Strong Buy >80%")
+        st.caption("Fixed bands: 🔴 Sell <45% · 🟠 Neutral 45–65% · 🟢 Buy 65–80% · 🟢🟢 Strong Buy >80%")
 
     with r_col:
         rating = rating_from_prob(confidence)
         rating_icon = {"Strong Buy": "🟢🟢", "Buy": "🟢", "Neutral": "🟠", "Sell": "🔴"}[rating]
-        st.metric("Rating (1 day)", f"{rating_icon} {rating}", help=HELP["rating"])
+        st.metric("Probability Band (1 day)", f"{rating_icon} {rating}", help=HELP["rating"])
+        st.caption("Signal uses tuned trading thresholds; this band uses fixed probability ranges.")
 
         risk_icon = {"Low": "🟢", "Medium": "🟡", "High": "🔴"}[risk['level']]
         st.metric("Risk Score", f"{risk_icon} {risk['score']:.1f} / 10 ({risk['level']})",
@@ -328,7 +494,7 @@ with tab_pred:
         if pos:
             for c in pos:
                 st.markdown(f"🟢 {describe_feature(c['feature'], c['value'])} "
-                            f"&nbsp; `+{c['contribution'] * 100:.1f}%`")
+                            f"&nbsp; :green[**+{c['contribution'] * 100:.1f}%**]")
         else:
             st.markdown("_Nothing significant_")
     with e_col2:
@@ -336,7 +502,7 @@ with tab_pred:
         if neg:
             for c in neg:
                 st.markdown(f"🔴 {describe_feature(c['feature'], c['value'])} "
-                            f"&nbsp; `{c['contribution'] * 100:.1f}%`")
+                            f"&nbsp; :red[**{c['contribution'] * 100:.1f}%**]")
         else:
             st.markdown("_Nothing significant_")
 
@@ -354,7 +520,12 @@ with tab_pred:
     c2.metric("Baseline (majority class)", f"{metrics['baseline_accuracy'] * 100:.2f}%", help=HELP["baseline"])
     c3.metric("Precision", f"{metrics['precision'] * 100:.1f}%", help=HELP["precision"])
     c4.metric("Recall", f"{metrics['recall'] * 100:.1f}%", help=HELP["recall"])
-    st.caption("1-day model, measured on the untouched test slice. Hover the (?) icons for explanations.")
+    _ctx = ("Features include NIFTY market context (index trend + relative strength)."
+            if get_index() is not None else
+            "⚠️ NIFTY data unavailable this session — market-context features are "
+            "neutral; predictions still work, slightly less informed.")
+    st.caption(f"1-day model, measured on the untouched test slice. {_ctx} "
+               "Hover the (?) icons for explanations.")
 
     cal = metrics.get('calibration')
     if cal:
@@ -394,14 +565,107 @@ with tab_pred:
                        f"underconfident; below = overconfident. Bubble size = number of "
                        f"days in that bucket. {verdict}{note}")
 
+with tab_scan:
+    st.markdown(
+        f"Screen all **{len(stocks)}** stocks in the current watchlist at once — "
+        "a ranked starting point for the day. Uses a fast model with default "
+        "thresholds, so its **Screen** column is not the same as the full "
+        "**Signal** shown at the top after you open a stock. 💡 The top 5 also "
+        "appear in the sidebar's **🔍 Screener** panel — tap any of them to jump "
+        "straight into the full analysis."
+    )
+    if st.button(f"🔍 Scan watchlist ({len(stocks)} stocks)", type="primary",
+                 help=HELP["scanner"]):
+        st.session_state["scan_requested"] = True
+
+    if not st.session_state.get("scan_requested"):
+        st.info("👆 Run a scan to rank the whole watchlist by the model's "
+                "probability of an up-move — typically the fastest way to find "
+                "the day's interesting names. First run downloads data for every "
+                "stock (one batched request); results are cached for an hour.")
+
+    if st.session_state.get("scan_requested"):
+        scan_df, scan_failures = run_scan(tuple(stocks.items()))
+
+        if scan_df.empty:
+            st.warning("No stocks could be scanned — check the watchlist symbols "
+                       "or try again later (data source may be rate-limiting).")
+        else:
+            n_buy = int((scan_df["Screen"] == "BUY").sum())
+            n_sell = int((scan_df["Screen"] == "SELL").sum())
+            sc1, sc2, sc3 = st.columns(3)
+            sc1.metric("Scanned", f"{len(scan_df)} stocks")
+            sc2.metric("BUY screens", n_buy)
+            sc3.metric("SELL screens", n_sell)
+
+            current_screen = scan_df[scan_df["Symbol"] == symbol]
+            if not current_screen.empty:
+                screen_call = current_screen.iloc[0]["Screen"]
+                if screen_call != signal:
+                    st.warning(
+                        f"Scanner shows **{screen_call}** for {symbol}, while the full "
+                        f"analysis signal is **{signal}**. Trust the full Signal for the "
+                        "selected stock; the Scanner is only a fast ranking pass."
+                    )
+
+            buys_only = st.checkbox("🟢 Show BUY screens only", value=False,
+                                    help=HELP["buys_only"])
+            view_df = scan_df[scan_df["Screen"] == "BUY"] if buys_only else scan_df
+            if buys_only and view_df.empty:
+                st.info("No BUY screen calls in this scan — the fast scanner isn't confident "
+                        "about anything today. That's information too.")
+
+            _scan_styled = _style_map(view_df.style, _color_signal, ["Screen"])
+            _scan_styled = _style_map(_scan_styled, _color_pos_neg, ["Day"])
+            st.dataframe(
+                _scan_styled, use_container_width=True, hide_index=True, height=560,
+                column_config={
+                    "Price": st.column_config.NumberColumn(format="%.2f"),
+                    "Day": st.column_config.NumberColumn(
+                        "Day %", format="percent",
+                        help="Change vs the previous close."),
+                    "Probability Up": st.column_config.ProgressColumn(
+                        format="percent", min_value=0, max_value=1,
+                        help=HELP["prob_up"]),
+                    "Screen": st.column_config.TextColumn(
+                        "Screen Call", help=HELP["scanner"]),
+                    "Test Acc": st.column_config.NumberColumn(
+                        format="percent", help=HELP["accuracy"]),
+                    "Baseline": st.column_config.NumberColumn(
+                        format="percent", help=HELP["baseline"]),
+                    "Risk": st.column_config.NumberColumn(
+                        "Risk /10", format="%.1f", help=HELP["risk_score"]),
+                    "To Support": st.column_config.NumberColumn(
+                        format="percent", help=HELP["scan_to_support"]),
+                    "To Resistance": st.column_config.NumberColumn(
+                        format="percent", help=HELP["scan_to_resistance"]),
+                })
+            st.caption(
+                "Ranked by probability of a meaningful up-move (1-day). ⚠️ Quick screen "
+                "only — fast tree model, default thresholds, no per-stock tuning. "
+                "Open a stock and use the top Signal for the full model decision. "
+                "Accuracy that doesn't beat its baseline means that stock's "
+                "screen call is noise. Results cached for 1 hour."
+            )
+            st.download_button("⬇️ Download scan as CSV",
+                               scan_df.to_csv(index=False).encode(),
+                               file_name="watchlist_scan.csv", mime="text/csv")
+
+        if scan_failures:
+            with st.expander(f"⚠️ {len(scan_failures)} stock(s) skipped"):
+                for sym, reason in scan_failures:
+                    st.markdown(f"- `{sym}` — {reason}")
+
 with tab_plan:
     # --- Support & Resistance ---
     st.subheader("Support & Resistance (auto-detected)")
     s_col, p_col, r_col = st.columns(3)
     if sr['support'] is not None:
         s_dist = (sr['price'] / sr['support'] - 1) * 100
+        # Negative delta -> ↓ arrow (the floor is below); "inverse" renders
+        # it green, matching the green support line on the Charts tab.
         s_col.metric("Support", f"{currency}{sr['support']:,.0f}",
-                     delta=f"{s_dist:.1f}% below price", delta_color="off",
+                     delta=f"-{s_dist:.1f}% below price", delta_color="inverse",
                      help=HELP["support"])
     else:
         s_col.metric("Support", "Not found", help=HELP["support"])
@@ -410,8 +674,10 @@ with tab_plan:
     p_col.metric("Current Price", f"{currency}{sr['price']:,.2f}")
     if sr['resistance'] is not None:
         r_dist = (sr['resistance'] / sr['price'] - 1) * 100
+        # Positive delta -> ↑ arrow (the ceiling is above); "inverse" renders
+        # it red, matching the red resistance line on the Charts tab.
         r_col.metric("Resistance", f"{currency}{sr['resistance']:,.0f}",
-                     delta=f"{r_dist:.1f}% above price", delta_color="off",
+                     delta=f"+{r_dist:.1f}% above price", delta_color="inverse",
                      help=HELP["resistance"])
     else:
         r_col.metric("Resistance", "Not found", help=HELP["resistance"])
@@ -542,6 +808,8 @@ with tab_wf:
                 'Sharpe': '{:.2f}', 'Max Drawdown': '{:.1%}',
                 'Exposure': '{:.0%}', 'Entry Thr': '{:.2f}', 'Exit Thr': '{:.2f}',
             }, na_rep="—")
+            styled = _style_map(styled, _color_pos_neg,
+                                ['Strategy Return', 'Buy & Hold', 'Sharpe'])
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
             sharpes = wf['Sharpe'].dropna()
@@ -579,6 +847,7 @@ with tab_journal:
             "logged_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
         }
         if append_signal(record):
+            st.toast(f"Logged {signal} for {symbol}", icon="📝")
             st.success(f"Logged: {signal} {symbol} @ {currency}{plan['entry']:,.2f} "
                        f"(stop {currency}{plan['stop']:,.2f} / target {currency}{plan['target']:,.2f})")
         else:
@@ -609,8 +878,11 @@ with tab_journal:
         show = resolved[["signal_date", "symbol", "model_type", "signal", "probability",
                          "entry", "stop", "target", "status", "days",
                          "outcome_return"]].sort_values("signal_date", ascending=False)
+        _journal_styled = _style_map(show.style, _color_status, ["status"])
+        _journal_styled = _style_map(_journal_styled, _color_signal, ["signal"])
+        _journal_styled = _style_map(_journal_styled, _color_pos_neg, ["outcome_return"])
         st.dataframe(
-            show, use_container_width=True, hide_index=True,
+            _journal_styled, use_container_width=True, hide_index=True,
             column_config={
                 "signal_date": "Date", "symbol": "Symbol", "model_type": "Model",
                 "signal": "Signal",
@@ -672,5 +944,23 @@ with tab_charts:
     st.plotly_chart(rsi_fig, use_container_width=True)
     st.caption(HELP["rsi"])
 
-st.caption("⚠️ Educational tool only — not financial advice. "
-           "Past backtest performance does not predict future results.")
+st.markdown(
+    """
+    <div style="
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        text-align: center;
+        padding: 0.75rem 1rem;
+        background: rgba(14, 17, 23, 0.92);
+        color: rgba(250, 250, 250, 0.65);
+        font-size: 0.875rem;
+        z-index: 999;
+    ">
+        ⚠️ Educational tool only — not financial advice.
+        All Rights reserved @Soumoster86.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)

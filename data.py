@@ -8,6 +8,7 @@ import yfinance as yf
 # Prediction horizons (trading days)
 HORIZONS = [1, 3, 5, 10, 20]
 NOISE_THRESHOLD = 0.002  # 1-day "meaningful move" threshold; scaled by sqrt(h)
+INDEX_SYMBOL = "^NSEI"   # NIFTY 50 — market context for Indian stocks
 
 # Single source of truth for model features. All are scale-free.
 FEATURES = [
@@ -19,16 +20,31 @@ FEATURES = [
     'Vol20', 'ATR_pct',
     # Volume
     'Vol_ratio',
+    # Market context (NIFTY) — single names are heavily index-driven; these
+    # let the model separate "this stock is weak" from "everything fell"
+    'Nifty_Ret', 'Nifty_Mom20', 'Rel_Str5', 'Rel_Str20',
 ]
 
 
-def fetch_data(symbol):
-    """Download daily OHLCV data. Returns an empty DataFrame on any failure."""
-    try:
-        data = yf.download(symbol, start="2020-01-01", auto_adjust=True, progress=False)
-    except Exception:
-        return pd.DataFrame()
+def _download_with_retry(retries=2, backoff=0.8, **kwargs):
+    """yf.download with retry on exceptions (rate limits, transient network).
+    Empty results are NOT retried — an empty frame usually means an invalid
+    symbol, and retrying would just make typos feel slow."""
+    import time
+    for attempt in range(retries + 1):
+        try:
+            return yf.download(start="2020-01-01", auto_adjust=True,
+                               progress=False, **kwargs)
+        except Exception:
+            if attempt == retries:
+                return None
+            time.sleep(backoff * (attempt + 1))
+    return None
 
+
+def fetch_data(symbol):
+    """Download daily OHLCV data for one symbol. Empty DataFrame on failure."""
+    data = _download_with_retry(tickers=symbol)
     if data is None or data.empty:
         return pd.DataFrame()
 
@@ -38,7 +54,42 @@ def fetch_data(symbol):
     return data
 
 
-def add_features(data):
+def fetch_many(symbols):
+    """Download daily OHLCV for many symbols in ONE batched request instead
+    of one request per symbol — the difference between 2 and 46 hits on a
+    rate-limited shared cloud IP. Returns {symbol: DataFrame}; symbols that
+    fail come back as empty DataFrames, never exceptions."""
+    symbols = list(dict.fromkeys(symbols))  # preserve order, drop dups
+    if not symbols:
+        return {}
+    if len(symbols) == 1:
+        return {symbols[0]: fetch_data(symbols[0])}
+
+    raw = _download_with_retry(tickers=symbols, group_by="ticker", threads=True)
+    if raw is None or raw.empty:
+        return {s: pd.DataFrame() for s in symbols}
+
+    out = {}
+    for s in symbols:
+        try:
+            df = raw[s].dropna(how="all")
+        except KeyError:  # ticker entirely absent from the response
+            df = pd.DataFrame()
+        out[s] = df if df is not None and not df.empty else pd.DataFrame()
+    return out
+
+
+def fetch_index(symbol=INDEX_SYMBOL):
+    """Close series of the market index, or None if it can't be fetched.
+    Callers treat None as 'context unavailable': the app keeps working on
+    neutral values, so an index rate-limit can never break anything."""
+    df = fetch_data(symbol)
+    if df is None or df.empty or 'Close' not in df.columns:
+        return None
+    return df['Close']
+
+
+def add_features(data, index_close=None):
     data = data.copy()
     close = data['Close']
     high = data['High']
@@ -82,6 +133,23 @@ def add_features(data):
     volume = data['Volume'].fillna(0)
     vol_ma = volume.rolling(20).mean().replace(0, np.nan)
     data['Vol_ratio'] = ((volume / vol_ma) - 1).clip(-1, 5).fillna(0)
+
+    # ----- Market context (NIFTY) -----
+    # Same-day values only — the index close is known the moment the stock
+    # closes, so there is no lookahead. Dates align to the stock's calendar
+    # with forward-fill, which also handles non-NSE tickers (different
+    # holidays) cleanly.
+    if index_close is not None and len(index_close) > 0:
+        idx = index_close.reindex(data.index).ffill()
+        data['Nifty_Ret'] = idx.pct_change()
+        data['Nifty_Mom20'] = idx.pct_change(20)
+        data['Rel_Str5'] = data['Mom5'] - idx.pct_change(5)
+        data['Rel_Str20'] = data['Mom20'] - idx.pct_change(20)
+    else:
+        # Neutral fallback: a zero-variance column scales to zeros, so the
+        # model simply learns nothing from these features instead of crashing.
+        for col in ('Nifty_Ret', 'Nifty_Mom20', 'Rel_Str5', 'Rel_Str20'):
+            data[col] = 0.0
 
     # ----- Multi-horizon targets -----
     # Target_h = 1 if the h-day-forward return exceeds a noise threshold that

@@ -1,0 +1,3 @@
+signal_date,symbol,name,model_type,signal,probability,rating,entry,stop,target,reward_risk,risk_score,logged_at
+2026-06-12,RELIANCE.NS,Reliance Industries,Ensemble (NN + XGBoost + RF),HOLD,0.5009,Neutral,1268.3,1233.89,1420.38,4.42,4.2,2026-06-12 10:09
+2026-06-12,BHARTIARTL.NS,Bharti Airtel,Ensemble (NN + XGBoost + RF),HOLD,0.4356,Sell,1808.7,1757.97,1899.85,1.8,4.0,2026-06-12 10:12
