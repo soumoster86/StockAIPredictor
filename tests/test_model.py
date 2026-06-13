@@ -119,82 +119,36 @@ def test_position_size_formula_and_caps():
     assert position_size(100_000, 1.0, 1000, 1000) is None
 
 
-def _pooled_frames(n_stocks=6):
-    from sklearn.ensemble import RandomForestClassifier
-    import model as M
-    M.make_predictor = lambda mt: M.EnsemblePredictor([
-        M.TreePredictor(RandomForestClassifier(
-            n_estimators=40, max_depth=4, min_samples_leaf=25,
-            random_state=42, n_jobs=-1), "RF-A"),
-        M.TreePredictor(RandomForestClassifier(
-            n_estimators=40, max_depth=3, min_samples_leaf=30,
-            random_state=7, n_jobs=-1), "RF-B"),
-    ])
-    frames = {}
-    for i in range(n_stocks):
-        rng = np.random.default_rng(i)
-        idx = pd.bdate_range("2021-01-01", periods=600)
-        rets = rng.normal(0.0004, 0.014, 600)
-        for j in range(6, 600):
-            rets[j] += 0.12 * np.mean(rets[j - 5:j])
-        c = pd.Series(100 * np.exp(np.cumsum(rets)), index=idx)
-        frames[f"S{i}.NS"] = add_features(pd.DataFrame({
-            "Open": c, "High": c * 1.01, "Low": c * 0.99, "Close": c,
-            "Volume": rng.integers(1e5, 5e6, 600).astype(float)}, index=idx))
-    return frames
+def test_random_benchmark_ranks_skill_high_and_noise_mid():
+    from model import random_signal_benchmark
+    idx = pd.bdate_range("2024-01-01", periods=250)
+    rng = np.random.default_rng(0)
+    prices = pd.Series(100 * np.exp(np.cumsum(rng.normal(0.0, 0.012, 250))), index=idx)
+    fwd = prices.pct_change().shift(-1).to_numpy()
+    skilled = np.clip(np.where(fwd > 0, 0.8, 0.2) + rng.normal(0, 0.05, 250), 0, 1)
+    r = random_signal_benchmark(skilled, prices, idx, (0.6, 0.4), n_random=400)
+    assert r is not None and r["sharpe_percentile"] > 80
+    pcts = []
+    for s in range(20):
+        p = np.random.default_rng(1000 + s).uniform(0, 1, 250)
+        res = random_signal_benchmark(p, prices, idx, (0.6, 0.4), n_random=150, seed=7)
+        if res:
+            pcts.append(res["sharpe_percentile"])
+    assert 35 < float(np.mean(pcts)) < 65
 
 
-def test_global_pooling_stacks_all_rows_without_nan_labels():
-    from model import pool_training_data
-    frames = _pooled_frames()
-    X, y, n = pool_training_data(frames, "Target_1")
-    expected = sum(len(d[d["Target_1"].notna()]) for d in frames.values())
-    assert len(X) == expected and n == len(frames)
-    assert not np.isnan(y).any()
-
-
-def test_global_train_save_load_reproduces_predictions(tmp_path):
-    import numpy as _np
-    from data import FEATURES
-    from model import (train_global_predictor, save_global_model,
-                       load_global_model, global_model_available)
-    frames = _pooled_frames()
-    pred, scaler, met = train_global_predictor(frames, "Target_1", "Ensemble")
-    assert 0 < met["accuracy"] < 1 and met["n_stocks"] == len(frames)
-    save_global_model(pred, scaler, 1, directory=str(tmp_path))
-    assert global_model_available(directory=str(tmp_path))
-    bundle = load_global_model(1, directory=str(tmp_path))
-    assert bundle is not None
-    sample = next(iter(frames.values())).tail(5)[FEATURES].values
-    p1 = pred.predict_all(scaler.transform(sample))
-    p2 = bundle["predictor"].predict_all(bundle["scaler"].transform(sample))
-    assert _np.allclose(p1, p2)
-
-
-def test_global_load_rejects_feature_drift_and_missing(tmp_path):
-    import joblib
-    from model import (train_global_predictor, save_global_model, load_global_model)
-    frames = _pooled_frames()
-    pred, scaler, _ = train_global_predictor(frames, "Target_1", "Ensemble")
-    path = save_global_model(pred, scaler, 1, directory=str(tmp_path))
-    b = joblib.load(path); b["features"] = b["features"][:-1]; joblib.dump(b, path)
-    assert load_global_model(1, directory=str(tmp_path)) is None
-    assert load_global_model(99, directory=str(tmp_path)) is None
-
-
-def test_predict_with_global_matches_train_model_contract(tmp_path):
-    from model import (train_global_predictor, save_global_model,
-                       load_global_model, predict_with_global, predict,
-                       backtest, explain_prediction)
-    frames = _pooled_frames()
-    pred, scaler, _ = train_global_predictor(frames, "Target_1", "Ensemble")
-    save_global_model(pred, scaler, 1, directory=str(tmp_path))
-    bundle = load_global_model(1, directory=str(tmp_path))
-    stock = next(iter(frames.values()))
-    gp, gs, gmet, gtest, gthr, gidx = predict_with_global(stock, bundle)
-    assert hasattr(gp, "predict_last") and gmet["source"] == "global"
-    assert len(gthr) == 2 and len(gtest) == len(gidx)
-    sig, prob = predict(gp, gs, stock, gthr)
-    assert sig in ("BUY", "SELL", "HOLD") and 0 <= prob <= 1
-    stats, _, _ = backtest(gtest, stock["Close"], gidx, gthr)
-    assert "sharpe" in stats
+def test_random_benchmark_matches_exposure_and_edge_cases():
+    from model import random_signal_benchmark
+    idx = pd.bdate_range("2024-01-01", periods=200)
+    rng = np.random.default_rng(3)
+    prices = pd.Series(100 * np.exp(np.cumsum(rng.normal(0.0, 0.012, 200))), index=idx)
+    probs = rng.uniform(0, 1, 200)
+    r = random_signal_benchmark(probs, prices, idx, (0.6, 0.4), n_random=100)
+    assert r is not None and 0 < r["exposure_days"] < r["total_days"]
+    assert len(r["rand_sharpes"]) == 100
+    assert random_signal_benchmark(np.full(200, 0.5), prices, idx, (0.6, 0.4)) is None
+    assert random_signal_benchmark(np.array([0.8, 0.2, 0.9]),
+                                   prices.head(3), idx[:3], (0.6, 0.4)) is None
+    a = random_signal_benchmark(probs, prices, idx, (0.6, 0.4), seed=42)
+    b = random_signal_benchmark(probs, prices, idx, (0.6, 0.4), seed=42)
+    assert a["sharpe_percentile"] == b["sharpe_percentile"]

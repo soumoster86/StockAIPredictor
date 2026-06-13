@@ -14,7 +14,7 @@ from model import (
     compute_risk_score, rating_from_prob, MODEL_TYPES, HAS_XGB,
     find_support_resistance, compute_trade_plan, position_size, quick_scan,
     global_model_available, load_global_model,
-    predict_with_global, multi_horizon_global,
+    predict_with_global, multi_horizon_global, random_signal_benchmark,
 )
 from journal import (
     load_journal, append_signal, resolve_journal, scorecard,
@@ -104,6 +104,7 @@ HELP = {
     "scan_to_resistance": "How far the nearest ceiling sits above the current price. Small = close to a level where rallies have stalled before.",
     "refresh": "Clears all cached data and models, then reloads with the latest prices. Everything retrains on the next view, so the first load after refreshing is slow — use when you specifically need today's latest close.",
     "buys_only": "Hide HOLD and SELL screen calls to focus on names worth opening for full analysis. The summary counts above still reflect the full scan.",
+    "benchmark": "Generates hundreds of random strategies that hold for the same number of days as the model, then shows where the model ranks. Above the 90th percentile = a real edge; near the 50th = no better than luck; the bell curve shows the random crowd.",
     "global_model": "When trained, the global model is one model fitted on the pooled history of all watchlist stocks (~50k+ rows) instead of ~1,200 for one stock — usually steadier, especially on stocks with short history. The app prefers it automatically; untick to force a fresh per-stock model and compare.",
     "use_global": "A global model is available. Keep it on for pooled-data predictions, or untick to train a per-stock model on the fly and compare the two in the Walk-Forward tab.",
 }
@@ -822,6 +823,52 @@ with tab_back:
     bt_fig.update_layout(height=400, margin=dict(l=10, r=10, t=30, b=10),
                          yaxis_title="Growth of ₹1", legend=dict(orientation="h", y=1.05))
     st.plotly_chart(bt_fig, use_container_width=True)
+
+    with st.expander("🎲 Random-signal benchmark — does this beat luck?"):
+        st.caption("The honest gut-check: hundreds of random strategies that "
+                   "trade as often as the model, ranked against it. Skill should "
+                   "sit far right of the random crowd; luck sits in the middle.")
+        bench = random_signal_benchmark(test_probs, data['Close'],
+                                        test_index, thresholds)
+        if bench is None:
+            st.info("Not enough trades in the test period to benchmark — the "
+                    "strategy barely took positions, so there's nothing to "
+                    "compare against the random crowd.")
+        else:
+            b1, b2 = st.columns(2)
+            b1.metric("Sharpe percentile", f"{bench['sharpe_percentile']:.0f}th",
+                      help=HELP["benchmark"])
+            b2.metric("Return percentile", f"{bench['return_percentile']:.0f}th",
+                      help=HELP["benchmark"])
+
+            pct = bench["sharpe_percentile"]
+            verdict = ("✅ Strong: the model clearly beats random strategies of the "
+                       "same activity — evidence of a real edge."
+                       if pct >= 90 else
+                       "🟡 Mixed: the model is somewhat above random, but not "
+                       "decisively — treat the edge as unproven."
+                       if pct >= 70 else
+                       "❌ No edge: the model performs like a random strategy of "
+                       "the same trade frequency. The backtest return is likely "
+                       "luck, not skill.")
+            st.markdown(f"**{verdict}**")
+
+            hist = go.Figure()
+            hist.add_trace(go.Histogram(x=bench["rand_sharpes"], nbinsx=30,
+                                        name="Random strategies",
+                                        marker_color="#4f9cf9", opacity=0.75))
+            hist.add_vline(x=bench["real_sharpe"], line_color="#36b37e",
+                           line_width=3,
+                           annotation_text="This model", annotation_position="top")
+            hist.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10),
+                               xaxis_title="Sharpe ratio",
+                               yaxis_title=f"# of {bench['n_random']} random strategies",
+                               showlegend=False)
+            st.plotly_chart(hist, use_container_width=True)
+            st.caption(f"Each random strategy held {bench['exposure_days']} of "
+                       f"{bench['total_days']} test days — matching the model's "
+                       "exposure exactly, so only signal *quality* is being tested, "
+                       "not how often it trades.")
 
     with st.expander("📖 Glossary — what do these terms mean?"):
         st.markdown(
