@@ -9,13 +9,16 @@
 torch==2.5.1+cpu
 
 # Pinned with ~= (compatible release): allows patch updates, blocks
-# breaking minor/major bumps. yfinance especially changes behavior across
-# minor versions, so it's pinned tightest. Bump these deliberately, then
-# let CI (pytest) confirm nothing broke before you deploy.
+# breaking minor/major bumps. After a Yahoo backend change broke the old
+# 0.2.x line, yfinance is moved to the current 1.x line; curl_cffi (its
+# HTTP backend) is pinned explicitly because its version drift is the
+# usual hidden cause of "empty data" failures. Bump deliberately; let CI
+# (pytest) confirm nothing broke before deploying.
 streamlit~=1.40
 pandas~=2.2
 numpy~=1.26
-yfinance==0.2.51
+yfinance~=1.4
+curl_cffi~=0.7
 scikit-learn~=1.5
 joblib~=1.4
 xgboost~=2.1
