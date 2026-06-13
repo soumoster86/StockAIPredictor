@@ -1,0 +1,13 @@
+# UI theme — safe to commit (no secrets live in this file; those stay in
+# secrets.toml, which remains gitignored). Delete the [theme] block to
+# return to Streamlit defaults, or tweak colors freely.
+
+[theme]
+base = "light"
+primaryColor = "#36b37e"          # accent: buttons, sliders, focus rings
+backgroundColor = "#0f1419"
+secondaryBackgroundColor = "#1a2029"  # sidebar, expanders, inputs
+textColor = "#e6e9ef"
+
+[browser]
+gatherUsageStats = false
