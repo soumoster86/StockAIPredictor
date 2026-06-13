@@ -44,6 +44,10 @@ stop loss, target, and risk.
 - View latest close, daily move, and a 30-day sparkline.
 - Analyze NSE tickers such as `RELIANCE.NS`, `INFY.NS`, `NETWEB.NS`, and any
   other Yahoo Finance-compatible symbol.
+- A data-quality gate cleans bad ticks, non-positive prices, and unadjusted
+  splits before any feature is computed, so corrupt input can't distort the model.
+- Watchlist data is fetched in one batched request (not one call per stock),
+  which is faster and far more resistant to Yahoo rate limits.
 
 ### AI Model Options
 
@@ -53,6 +57,10 @@ The app supports multiple model types:
 - Neural Network: tabular PyTorch MLP.
 - LSTM: sequence model using the latest 20 trading days.
 - GRU: sequence model using the latest 20 trading days.
+- Global model: a single model pre-trained on the pooled history of every stock
+  in the watchlist (run `train_global.py` offline). When its artifacts are
+  present the app prefers it automatically, falling back to a per-stock model
+  otherwise. Toggle it from the sidebar.
 
 All model types use the same feature pipeline, chronological train-validation-
 test split, threshold tuning, backtesting, and explainability flow.
@@ -93,6 +101,9 @@ signal. Open the stock for the full model signal before making any decision.
 - Probability calibration metrics: Brier score and expected calibration error.
 - Optional isotonic calibration.
 - Feature attribution showing what pushed the prediction up or down.
+- Random-signal benchmark: ranks the strategy's Sharpe against hundreds of
+  random strategies of the same trade frequency, to show whether the edge is
+  real or just luck.
 
 ### Journal
 
@@ -282,6 +293,18 @@ The untouched test slice is used for:
 After evaluation, the app refits a live model on all rows with known targets so
 the displayed prediction uses the latest available history.
 
+### Global Model (optional, pre-trained)
+
+Instead of training one model per stock from about 1,200 rows, you can train a
+single global model on the pooled history of the entire watchlist
+(50,000+ rows) by running `python train_global.py`. This saves one model per
+horizon into `global_models/`, which you commit to the repo. When present, the
+app prefers the global model automatically and falls back to per-stock training
+when it is missing or a stock has too little history. Thresholds and all
+reported metrics stay stock-specific, so the comparison remains fair. Retrain
+monthly as more real market history accumulates — never on the model's own
+predictions.
+
 ---
 
 ## Project Structure
@@ -293,13 +316,16 @@ the displayed prediction uses the latest available history.
 ├── data.py             # Data download, feature engineering, targets
 ├── model.py            # Models, training, signals, backtests, trade planning
 ├── journal.py          # Signal journal and forward-test scoring
+├── train_global.py     # Offline trainer for the pooled global model
 ├── stocks.csv          # Default watchlist
-├── requirements.txt    # Python dependencies
+├── requirements.txt    # Python dependencies (pinned)
 ├── DEPLOYMENT.md       # Streamlit Community Cloud deployment guide
 ├── LICENSE             # Unlicense / public domain dedication
-├── ci.yml              # CI workflow file, if placed under .github/workflows
-├── test_*.py           # Unit and static integrity tests
-└── conftest.py         # Test stubs/helpers
+├── .streamlit/config.toml      # Theme (safe to commit; no secrets)
+├── .github/workflows/ci.yml    # Runs the test suite on every push
+├── tests/              # Unit + static integrity tests (conftest, test_*.py)
+└── global_models/      # Created by train_global.py, then committed
+                        #   global_h1..h20.joblib + global_meta.json
 ```
 
 ---
@@ -457,7 +483,7 @@ pytest
 Or run a focused test file:
 
 ```bash
-pytest test_model.py
+pytest tests/test_model.py
 ```
 
 The tests cover:

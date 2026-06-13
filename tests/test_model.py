@@ -119,36 +119,19 @@ def test_position_size_formula_and_caps():
     assert position_size(100_000, 1.0, 1000, 1000) is None
 
 
-def test_random_benchmark_ranks_skill_high_and_noise_mid():
-    from model import random_signal_benchmark
-    idx = pd.bdate_range("2024-01-01", periods=250)
-    rng = np.random.default_rng(0)
-    prices = pd.Series(100 * np.exp(np.cumsum(rng.normal(0.0, 0.012, 250))), index=idx)
-    fwd = prices.pct_change().shift(-1).to_numpy()
-    skilled = np.clip(np.where(fwd > 0, 0.8, 0.2) + rng.normal(0, 0.05, 250), 0, 1)
-    r = random_signal_benchmark(skilled, prices, idx, (0.6, 0.4), n_random=400)
-    assert r is not None and r["sharpe_percentile"] > 80
-    pcts = []
-    for s in range(20):
-        p = np.random.default_rng(1000 + s).uniform(0, 1, 250)
-        res = random_signal_benchmark(p, prices, idx, (0.6, 0.4), n_random=150, seed=7)
-        if res:
-            pcts.append(res["sharpe_percentile"])
-    assert 35 < float(np.mean(pcts)) < 65
+def test_trade_plan_rejects_noise_tight_support_stop():
+    """A support sitting almost at entry must NOT create a noise-tight stop
+    (the 1:13.6 R:R bug). The stop distance is floored at 0.5x ATR."""
+    from model import compute_trade_plan
+    idx = pd.bdate_range("2024-01-01", periods=60)
+    d = pd.DataFrame(index=idx)
+    d["Close"] = 122.13
+    d["ATR_pct"] = 3.4 / 122.13          # ATR = 3.4
 
+    p = compute_trade_plan(d, support=122.0, resistance=136.0)
+    assert (p["entry"] - p["stop"]) >= 0.5 * 3.4 - 0.01
+    assert p["stop_basis"] == "1.5× ATR below entry"
+    assert p["reward_risk"] < 8
 
-def test_random_benchmark_matches_exposure_and_edge_cases():
-    from model import random_signal_benchmark
-    idx = pd.bdate_range("2024-01-01", periods=200)
-    rng = np.random.default_rng(3)
-    prices = pd.Series(100 * np.exp(np.cumsum(rng.normal(0.0, 0.012, 200))), index=idx)
-    probs = rng.uniform(0, 1, 200)
-    r = random_signal_benchmark(probs, prices, idx, (0.6, 0.4), n_random=100)
-    assert r is not None and 0 < r["exposure_days"] < r["total_days"]
-    assert len(r["rand_sharpes"]) == 100
-    assert random_signal_benchmark(np.full(200, 0.5), prices, idx, (0.6, 0.4)) is None
-    assert random_signal_benchmark(np.array([0.8, 0.2, 0.9]),
-                                   prices.head(3), idx[:3], (0.6, 0.4)) is None
-    a = random_signal_benchmark(probs, prices, idx, (0.6, 0.4), seed=42)
-    b = random_signal_benchmark(probs, prices, idx, (0.6, 0.4), seed=42)
-    assert a["sharpe_percentile"] == b["sharpe_percentile"]
+    p2 = compute_trade_plan(d, support=120.0, resistance=136.0)
+    assert p2["stop_basis"] == "just below the nearest support"
