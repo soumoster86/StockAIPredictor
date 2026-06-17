@@ -75,16 +75,42 @@ def require_login():
 
     users = _get_users()
 
-    # ---- Hero header ----
+    # ---- Hero header (icon + title) ----
+    import base64
+    from pathlib import Path
+
+    # Embed the icon as base64 so it renders inside the custom HTML header.
+    # st.markdown with unsafe_allow_html can't reference local files directly,
+    # so inlining the bytes is the reliable way to place an image beside text.
+    _icon_b64 = ""
+    for _name in ("icon_256.png", "icon_128.png", "icon.png"):
+        _p = Path(__file__).parent / "src" / _name
+        if _p.exists():
+            _icon_b64 = base64.b64encode(_p.read_bytes()).decode()
+            break
+
+    _icon_html = (
+        f'<img src="data:image/png;base64,{_icon_b64}" '
+        f'style="height:68px; width:68px; border-radius:15px; flex:none;" '
+        f'alt="logo" />'
+        if _icon_b64 else
+        '<div style="font-size:3rem; line-height:1;">📊</div>'
+    )
+
     st.markdown(
-        """
-        <div style="text-align:center; padding: 1.5rem 0 0.5rem 0;">
-            <div style="font-size:2.3rem; font-weight:800; letter-spacing:-0.02em;">
-                📈 AI Stock Trend Predictor
-            </div>
-            <div style="font-size:1.05rem; color: rgba(230,233,239,0.6);
-                        margin-top:0.25rem;">
-                Machine-learning powered stock analytics
+        f"""
+        <div style="display:flex; align-items:center; justify-content:center;
+                    gap:1.1rem; padding:1.5rem 0 0.5rem 0; flex-wrap:wrap;">
+            {_icon_html}
+            <div style="text-align:left;">
+                <div style="font-size:2.3rem; font-weight:800; letter-spacing:-0.02em;
+                            line-height:1.05;">
+                    AI Stock Predictor
+                </div>
+                <div style="font-size:1.05rem; color: rgba(230,233,239,0.6);
+                            margin-top:0.25rem;">
+                    Machine-learning powered stock analytics
+                </div>
             </div>
         </div>
         """,

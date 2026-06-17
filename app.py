@@ -22,7 +22,7 @@ from journal import (
 )
 from auth import require_login, logout_button
 
-st.set_page_config(page_title="AI Stock Trend Predictor", page_icon="📈", layout="wide")
+st.set_page_config(page_title="AI Stock Trend Predictor", page_icon="icon/icon_256.png", layout="wide")
 
 current_user = require_login()  # everything below runs only when authenticated
 

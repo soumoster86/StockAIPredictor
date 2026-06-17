@@ -1,0 +1,56 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background gradient: deep slate, matching the app's dark theme -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a2029"/>
+      <stop offset="100%" stop-color="#0f1419"/>
+    </linearGradient>
+    <!-- Accent gradient for the trend line -->
+    <linearGradient id="trend" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2d8f66"/>
+      <stop offset="100%" stop-color="#36b37e"/>
+    </linearGradient>
+    <!-- Soft glow under the rising line -->
+    <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#36b37e" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#36b37e" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded-square app tile -->
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect x="3" y="3" width="506" height="506" rx="109" fill="none"
+        stroke="#36b37e" stroke-opacity="0.18" stroke-width="3"/>
+
+  <!-- Area fill under the trend line -->
+  <path d="M 96 340 L 176 300 L 232 322 L 312 224 L 372 256 L 416 168
+           L 416 392 L 96 392 Z" fill="url(#fill)"/>
+
+  <!-- The rising trend line -->
+  <polyline points="96,340 176,300 232,322 312,224 372,256 416,168"
+            fill="none" stroke="url(#trend)" stroke-width="18"
+            stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- Data nodes (the "AI signal" points) -->
+  <g fill="#0f1419" stroke="#36b37e" stroke-width="7">
+    <circle cx="176" cy="300" r="11"/>
+    <circle cx="232" cy="322" r="11"/>
+    <circle cx="312" cy="224" r="11"/>
+    <circle cx="372" cy="256" r="11"/>
+  </g>
+
+  <!-- Prediction node: the bright forward signal at the peak -->
+  <circle cx="416" cy="168" r="20" fill="#36b37e"/>
+  <circle cx="416" cy="168" r="20" fill="none" stroke="#7ee7b8"
+          stroke-width="4" opacity="0.7"/>
+
+  <!-- Upward prediction arrow extending from the peak -->
+  <g stroke="#7ee7b8" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M 416 168 L 452 124"/>
+    <path d="M 430 120 L 456 118 L 452 144"/>
+  </g>
+
+  <!-- Baseline axis -->
+  <line x1="96" y1="392" x2="416" y2="392" stroke="#e6e9ef"
+        stroke-opacity="0.25" stroke-width="6" stroke-linecap="round"/>
+</svg>
