@@ -70,6 +70,7 @@
     "AGIIL.NS",
     "AGRITECH.NS",
     "AGROPHOS.NS",
+    "AHCL.NS",
     "AHLADA.NS",
     "AHLEAST.NS",
     "AHLUCONT.NS",
@@ -1584,6 +1585,7 @@
     "RKSWAMY.NS",
     "RMDRIP.NS",
     "RML.NS",
+    "RNBDENIMS.NS",
     "ROHLTD.NS",
     "ROLEXRINGS.NS",
     "ROLLT.NS",
@@ -1817,6 +1819,7 @@
     "STEELXIND.NS",
     "STEL.NS",
     "STERTOOLS.NS",
+    "STLNETWORK.NS",
     "STLTECH.NS",
     "STOVEKRAFT.NS",
     "STYLAMIND.NS",
@@ -2056,6 +2059,7 @@
     "VIKASECO.NS",
     "VIKASLIFE.NS",
     "VIKRAMSOLR.NS",
+    "VIKRAN.NS",
     "VIMTALABS.NS",
     "VINATIORGA.NS",
     "VINCOFE.NS",
@@ -2148,38 +2152,38 @@
     "ZYDUSLIFE.NS",
     "ZYDUSWELL.NS"
   ],
-  "n_stocks": 2147,
+  "n_stocks": 2151,
   "model": "Ensemble",
-  "trained_at": "2026-06-20 13:00",
+  "trained_at": "2026-06-24 11:55",
   "horizons": {
     "1": {
-      "rows": 2825117,
-      "stocks": 2146,
-      "accuracy": 0.5954,
-      "baseline": 0.5735
+      "rows": 2832151,
+      "stocks": 2150,
+      "accuracy": 0.5955,
+      "baseline": 0.5751
     },
     "3": {
-      "rows": 2820825,
-      "stocks": 2146,
-      "accuracy": 0.5874,
-      "baseline": 0.5622
+      "rows": 2827851,
+      "stocks": 2150,
+      "accuracy": 0.5866,
+      "baseline": 0.5611
     },
     "5": {
-      "rows": 2816533,
-      "stocks": 2146,
-      "accuracy": 0.5819,
-      "baseline": 0.5528
+      "rows": 2823551,
+      "stocks": 2150,
+      "accuracy": 0.5817,
+      "baseline": 0.554
     },
     "10": {
-      "rows": 2805803,
-      "stocks": 2146,
-      "accuracy": 0.5844,
-      "baseline": 0.5406
+      "rows": 2812801,
+      "stocks": 2150,
+      "accuracy": 0.5834,
+      "baseline": 0.5397
     },
     "20": {
-      "rows": 2784343,
-      "stocks": 2146,
-      "accuracy": 0.5871,
+      "rows": 2791301,
+      "stocks": 2150,
+      "accuracy": 0.5881,
       "baseline": 0.5193
     }
   }
