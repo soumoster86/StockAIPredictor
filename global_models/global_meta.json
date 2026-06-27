@@ -2154,37 +2154,37 @@
   ],
   "n_stocks": 2151,
   "model": "Ensemble",
-  "trained_at": "2026-06-24 11:55",
+  "trained_at": "2026-06-27 20:58",
   "horizons": {
     "1": {
-      "rows": 2832151,
+      "rows": 2834313,
       "stocks": 2150,
-      "accuracy": 0.5955,
-      "baseline": 0.5751
+      "accuracy": 0.5972,
+      "baseline": 0.5756
     },
     "3": {
-      "rows": 2827851,
+      "rows": 2830013,
       "stocks": 2150,
-      "accuracy": 0.5866,
-      "baseline": 0.5611
+      "accuracy": 0.5845,
+      "baseline": 0.5603
     },
     "5": {
-      "rows": 2823551,
+      "rows": 2825713,
       "stocks": 2150,
-      "accuracy": 0.5817,
-      "baseline": 0.554
+      "accuracy": 0.5823,
+      "baseline": 0.5539
     },
     "10": {
-      "rows": 2812801,
+      "rows": 2814963,
       "stocks": 2150,
-      "accuracy": 0.5834,
-      "baseline": 0.5397
+      "accuracy": 0.5828,
+      "baseline": 0.5394
     },
     "20": {
-      "rows": 2791301,
+      "rows": 2793463,
       "stocks": 2150,
-      "accuracy": 0.5881,
-      "baseline": 0.5193
+      "accuracy": 0.5876,
+      "baseline": 0.5186
     }
   }
 }
