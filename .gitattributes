@@ -1,0 +1,4 @@
+# Optional Git LFS: uncomment the next line if you enable LFS on this repo
+# and run: git lfs install && git lfs track "global_models/*.joblib"
+# (Left disabled so Streamlit Community Cloud keeps receiving full model blobs.)
+# global_models/*.joblib filter=lfs diff=lfs merge=lfs -text

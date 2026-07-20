@@ -3,15 +3,24 @@
 # =============================
 """Signal journal: log each signal the app produces, then score it against
 what the market actually did. Backtests look backward; this is the app's
-forward test. Storage is a plain CSV next to app.py — human-readable,
-editable, and easy to back up."""
+forward test.
+
+Storage is one CSV **per authenticated user** under `journals/`, so multi-user
+deploys do not share or clobber each other's forward-tests. Files are
+human-readable, editable, and easy to download from the Journal tab.
+"""
 
 from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
 
-JOURNAL_FILE = Path(__file__).parent / "journal.csv"
+ROOT = Path(__file__).parent
+JOURNAL_DIR = ROOT / "journals"
+LEGACY_JOURNAL_FILE = ROOT / "journal.csv"  # pre-per-user; read-only migrate
+# Back-compat alias used by older docs / imports
+JOURNAL_FILE = LEGACY_JOURNAL_FILE
 MAX_HOLD_DAYS = 20  # trading days before an unresolved BUY plan expires
 
 COLUMNS = [
@@ -20,7 +29,36 @@ COLUMNS = [
 ]
 
 
-def load_journal(path=JOURNAL_FILE):
+def safe_username(user):
+    """Filesystem-safe username fragment (letters, digits, . _ -)."""
+    s = re.sub(r"[^A-Za-z0-9._-]+", "_", str(user or "anonymous").strip())
+    s = s.strip("._-")[:64]
+    return s or "anonymous"
+
+
+def journal_path_for(user=None):
+    """Return the journal CSV path for `user`.
+
+    - With a username: `journals/<user>.csv` (created on first write).
+    - Without: legacy `journal.csv` at the repo root (single-user / tests).
+    """
+    if user is None or str(user).strip() == "":
+        return LEGACY_JOURNAL_FILE
+    return JOURNAL_DIR / f"{safe_username(user)}.csv"
+
+
+def _maybe_migrate_legacy(path):
+    """If the per-user file is missing but legacy journal.csv exists and the
+    user path is under journals/, seed an empty dir only — we do **not**
+    auto-copy the shared legacy file (it may belong to another person)."""
+    path = Path(path)
+    if path.parent == JOURNAL_DIR:
+        JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def load_journal(path=None, user=None):
+    if path is None:
+        path = journal_path_for(user)
     path = Path(path)
     if not path.exists():
         return pd.DataFrame(columns=COLUMNS)
@@ -31,9 +69,13 @@ def load_journal(path=JOURNAL_FILE):
     return df[COLUMNS]
 
 
-def append_signal(record, path=JOURNAL_FILE):
+def append_signal(record, path=None, user=None):
     """Append one signal. Deduped on (signal_date, symbol, model_type):
     logging the same stock twice in a day updates nothing and returns False."""
+    if path is None:
+        path = journal_path_for(user)
+    path = Path(path)
+    _maybe_migrate_legacy(path)
     df = load_journal(path)
     dup = (
         (df["signal_date"] == record["signal_date"])
@@ -42,6 +84,7 @@ def append_signal(record, path=JOURNAL_FILE):
     )
     if dup.any():
         return False
+    path.parent.mkdir(parents=True, exist_ok=True)
     df = pd.concat([df, pd.DataFrame([record])[COLUMNS]], ignore_index=True)
     df.to_csv(path, index=False)
     return True

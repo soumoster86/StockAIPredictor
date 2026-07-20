@@ -4,14 +4,17 @@
 
 Files to commit:
 ```
-app.py  model.py  data.py  journal.py  auth.py
-stocks.csv  requirements.txt  secrets.toml.example
-.gitignore  DEPLOYMENT.md
+app.py  ui/  model.py  data.py  journal.py  auth.py  train_global.py
+stocks.csv  stocks_universe.csv  requirements.txt  requirements-dev.txt
+.gitignore  .gitattributes  DEPLOYMENT.md  .github/workflows/ci.yml
+scripts/check_models.py
+global_models/   (optional pre-trained artifacts; prefer Git LFS)
 ```
 
-Files that must NEVER be committed (already in .gitignore):
+Files that must NEVER be committed (already in `.gitignore`):
 - `.streamlit/secrets.toml` — your passwords live here
-- `journal.csv` — personal forward-test data
+- `journal.csv`, `journals/` — personal per-user forward-test data
+- `__pycache__/`, `.venv/`
 
 ```bash
 git init
@@ -40,7 +43,7 @@ secrets panel in step 4. Do NOT create a secrets.toml in the repo.
 
 ## 4. Advanced settings (BEFORE clicking Deploy)
 
-- **Python version: 3.12** (matches the pinned torch CPU wheel)
+- **Python version: 3.12** (recommended; matches common torch CPU wheels)
 - **Secrets**: paste the `[auth.users]` block from step 2
 
 (Both can also be changed later under App → Settings.)
@@ -62,7 +65,9 @@ Click Deploy. The first build takes several minutes (torch). Then check:
   "over its resource limits" → reboot the app from the cloud dashboard.
 - **yfinance rate limits**: cloud IPs are shared, so Yahoo sometimes
   refuses requests. "Could not fetch data" usually fixes itself within
-  the hour (data is cached for 60 min once fetched).
+  the hour (data is cached for 60 min once fetched). The default
+  default watchlist is the full `stocks_universe.csv`; the Screener still
+  hard-caps at 80 symbols per run so Yahoo/Cloud limits stay usable.
 - **App sleeps** after ~12h of no traffic; first visitor wakes it (~1 min).
 - **Login is per-session**: a hard refresh requires logging in again.
 

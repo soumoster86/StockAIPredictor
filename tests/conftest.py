@@ -19,7 +19,8 @@ def _stub_torch():
     class Tensor:
         pass
 
-    for name in ["Sequential", "Linear", "ReLU", "BCEWithLogitsLoss", "LSTM", "GRU"]:
+    for name in ["Sequential", "Linear", "ReLU", "Dropout", "BCEWithLogitsLoss",
+                 "LSTM", "GRU"]:
         setattr(nn, name, type(name, (), {"__init__": lambda self, *a, **k: None}))
     nn.Module = Module
     torch.nn = nn

@@ -107,9 +107,11 @@ signal. Open the stock for the full model signal before making any decision.
 
 ### Journal
 
-- Log the app's signal and trade plan.
+- Log the app's signal and trade plan (**one CSV per authenticated user** under
+  `journals/`).
 - Later resolve logged BUY plans against real price action.
 - Tracks target hit, stop hit, expired plans, win rate, and average return.
+- Download regularly on Streamlit Community Cloud (ephemeral disk).
 
 ---
 
@@ -296,14 +298,22 @@ the displayed prediction uses the latest available history.
 ### Global Model (optional, pre-trained)
 
 Instead of training one model per stock from about 1,200 rows, you can train a
-single global model on the pooled history of the entire watchlist
-(50,000+ rows) by running `python train_global.py`. This saves one model per
-horizon into `global_models/`, which you commit to the repo. When present, the
-app prefers the global model automatically and falls back to per-stock training
-when it is missing or a stock has too little history. Thresholds and all
-reported metrics stay stock-specific, so the comparison remains fair. Retrain
-monthly as more real market history accumulates — never on the model's own
-predictions.
+single global model on the pooled history of many stocks by running
+`python train_global.py` (liquid default) or
+`python train_global.py --stocks stocks_universe.csv` (full dump).
+
+Training uses a **time-ordered** pool split: earlier calendar days train,
+later days evaluate, with an embargo matching the label horizon so overlapping
+multi-day targets cannot leak across the cut. The deployed artifact is then
+refit on all labeled history.
+
+When present under `global_models/`, the app prefers the global model
+automatically and falls back to per-stock training when it is missing or a
+stock has too little history. Thresholds stay stock-specific. Accuracy on a
+name that was in the training universe is **indicative, not fully
+out-of-sample** — the UI states this explicitly; prefer the Walk-Forward tab
+for a stricter check. Retrain monthly on real price history only — never on
+the model's own predictions.
 
 ---
 
@@ -311,21 +321,33 @@ predictions.
 
 ```text
 .
-├── app.py              # Streamlit UI and app workflow
+├── app.py              # Thin Streamlit entrypoint
+├── ui/                 # Presentation layer (sidebar, tabs, caches, tooltips)
+│   ├── services.py     # Cached data/model loaders + scanner
+│   ├── sidebar.py      # Settings / stock picker
+│   ├── tabs.py         # Prediction, Scanner, Plan, Backtest, …
+│   └── …
 ├── auth.py             # Login gate and PBKDF2 password hashing
 ├── data.py             # Data download, feature engineering, targets
 ├── model.py            # Models, training, signals, backtests, trade planning
-├── journal.py          # Signal journal and forward-test scoring
+├── journal.py          # Per-user signal journal and forward-test scoring
 ├── train_global.py     # Offline trainer for the pooled global model
-├── stocks.csv          # Default watchlist
+├── scripts/check_models.py  # Validate global_models/ (or GLOBAL_MODEL_DIR)
+├── stocks.csv          # Optional liquid list (upload / offline convenience)
+├── stocks_universe.csv # Default full NSE-style watchlist (~2k+ names)
 ├── requirements.txt    # Python dependencies (pinned)
+├── requirements-dev.txt# Dev extras (pytest)
 ├── DEPLOYMENT.md       # Streamlit Community Cloud deployment guide
 ├── LICENSE             # Unlicense / public domain dedication
+├── .gitignore          # Secrets, journals/, caches, venv
+├── .gitattributes      # Git LFS pointers for *.joblib (optional)
 ├── .streamlit/config.toml      # Theme (safe to commit; no secrets)
-├── .github/workflows/ci.yml    # Runs the test suite on every push
-├── tests/              # Unit + static integrity tests (conftest, test_*.py)
-└── global_models/      # Created by train_global.py, then committed
+├── .github/workflows/ci.yml    # pytest on Python 3.11 and 3.12
+├── tests/              # Unit + static integrity tests
+├── journals/           # Per-user CSVs at runtime (gitignored)
+└── global_models/      # Created by train_global.py, then committed / LFS
                         #   global_h1..h20.joblib + global_meta.json
+                        #   override path with env GLOBAL_MODEL_DIR
 ```
 
 ---
@@ -377,15 +399,16 @@ pip install -r requirements.txt
 
 Notes:
 
-- `requirements.txt` uses the CPU-only PyTorch wheel for Streamlit Community
-  Cloud.
-- The pinned CPU wheel works best with Python 3.12 or lower.
-- If the CPU-only torch pin fails locally on macOS/Linux, replace the torch
-  lines with:
+- `requirements.txt` uses a current CPU-only PyTorch wheel (`2.13.0+cpu`)
+  for Streamlit Community Cloud and local installs.
+- Prefer **Python 3.11 or 3.12** for the smoothest install. Python 3.14 works
+  with recent torch builds; if `+cpu` still fails on your OS, install:
 
 ```text
-torch>=2.0
+pip install "torch>=2.9,<3"
 ```
+
+  (omit the `+cpu` pin; pip will fetch a default wheel for your platform.)
 
 ---
 
@@ -477,6 +500,7 @@ Important cloud notes:
 Run the test suite with:
 
 ```bash
+pip install -r requirements-dev.txt
 pytest
 ```
 
@@ -486,30 +510,38 @@ Or run a focused test file:
 pytest tests/test_model.py
 ```
 
+CI (`.github/workflows/ci.yml`) runs the same suite on Python **3.11** and
+**3.12** for every push and pull request.
+
 The tests cover:
 
-- Model utility math.
+- Model utility math and trade-plan stop floors.
 - Signal threshold behavior.
+- Time-ordered global training split.
 - Feature engineering behavior.
 - Journal resolution.
 - Auth hashing and validation.
-- Static app integrity checks.
-
-If `pytest` is missing:
-
-```bash
-pip install pytest
-```
+- Static app integrity checks (including watchlist size and `SCAN_MAX`).
 
 ---
 
 ## Custom Stock Universe
 
-The default stock list is stored in:
+The **default app watchlist** is the full NSE-style dump:
+
+```text
+stocks_universe.csv
+```
+
+Optional shorter liquid list (for uploads / offline convenience):
 
 ```text
 stocks.csv
 ```
+
+The stock picker loads the **full** universe. The in-app Screener still
+hard-caps at **80** symbols per run so Streamlit Community Cloud and Yahoo
+rate limits stay usable. Upload a CSV to replace the list for a session.
 
 Expected columns:
 
@@ -520,7 +552,7 @@ Infosys,INFY.NS
 ```
 
 You can also upload a CSV from the sidebar at runtime. Uploaded lists replace
-the default list for that session.
+the default list for that session (scanner still respects the 80-name cap).
 
 ---
 
@@ -547,13 +579,32 @@ the default list for that session.
 - The app refuses to load if no users are configured.
 - Do not commit secrets, journal files, or private credentials.
 
-Recommended `.gitignore` entries:
+A root `.gitignore` already excludes secrets, `journal.csv`, `journals/`,
+caches, and virtualenvs. Do not force-add those paths.
 
-```gitignore
-.streamlit/secrets.toml
-journal.csv
-__pycache__/
-.venv/
+### Model store (Git LFS / external path)
+
+Large `global_models/*.joblib` files are listed in `.gitattributes` for
+optional [Git LFS](https://git-lfs.com/). On a new clone:
+
+```bash
+git lfs install
+git lfs pull
+python scripts/check_models.py
+```
+
+To load models from a mounted volume or object-store sync directory:
+
+```bash
+# Windows PowerShell
+$env:GLOBAL_MODEL_DIR = "D:\models\stock-predictor"
+streamlit run app.py
+```
+
+```bash
+# Linux / macOS
+export GLOBAL_MODEL_DIR=/data/models
+streamlit run app.py
 ```
 
 ---

@@ -69,19 +69,21 @@ def require_login():
     login page and halts the script until authenticated; afterwards returns
     the username."""
     import streamlit as st
+    import base64
+    from pathlib import Path
+
+    # Theme CSS on login too (before authenticated shell).
+    try:
+        from ui.theme import inject_global_css, footer_bar
+        inject_global_css()
+    except Exception:
+        footer_bar = None
 
     if st.session_state.get("auth_user"):
         return st.session_state["auth_user"]
 
     users = _get_users()
 
-    # ---- Hero header (icon + title) ----
-    import base64
-    from pathlib import Path
-
-    # Embed the icon as base64 so it renders inside the custom HTML header.
-    # st.markdown with unsafe_allow_html can't reference local files directly,
-    # so inlining the bytes is the reliable way to place an image beside text.
     _icon_b64 = ""
     for _name in ("icon_256.png", "icon_128.png", "icon.png"):
         _p = Path(__file__).parent / "src" / _name
@@ -89,36 +91,36 @@ def require_login():
             _icon_b64 = base64.b64encode(_p.read_bytes()).decode()
             break
 
-    _icon_html = (
-        f'<img src="data:image/png;base64,{_icon_b64}" '
-        f'style="height:68px; width:68px; border-radius:15px; flex:none;" '
-        f'alt="logo" />'
-        if _icon_b64 else
-        '<div style="font-size:3rem; line-height:1;">📊</div>'
-    )
-
-    st.markdown(
-        f"""
-        <div style="display:flex; align-items:center; justify-content:center;
-                    gap:1.1rem; padding:1.5rem 0 0.5rem 0; flex-wrap:wrap;">
-            {_icon_html}
-            <div style="text-align:left;">
-                <div style="font-size:2.3rem; font-weight:800; letter-spacing:-0.02em;
-                            line-height:1.05;">
-                    AI Stock Predictor
-                </div>
-                <div style="font-size:1.05rem; color: rgba(230,233,239,0.6);
-                            margin-top:0.25rem;">
-                    Machine-learning powered stock analytics
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Title uses Streamlit heading + safe top padding so it never sits under
+    # the fixed Deploy toolbar (that was clipping the top of "AI Stock…").
+    _, mid, _ = st.columns([1, 2.4, 1])
+    with mid:
+        if _icon_b64:
+            st.markdown(
+                f'<div style="text-align:center;padding:0.85rem 0 0.35rem 0;">'
+                f'<img src="data:image/png;base64,{_icon_b64}" alt="logo" '
+                f'width="64" height="64" style="border-radius:16px;" /></div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                "<div style='text-align:center;padding:0.85rem 0 0.35rem 0;"
+                "font-size:2.4rem;'>📈</div>",
+                unsafe_allow_html=True,
+            )
+        st.markdown(
+            "<h2 style='text-align:center;margin:0.25rem 0 0.2rem 0;"
+            "line-height:1.3;font-weight:800;'>AI Stock Predictor</h2>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<p style='text-align:center;margin:0 0 0.4rem 0;"
+            "color:rgba(232,236,241,0.65);font-size:0.95rem;line-height:1.45;'>"
+            "Machine-learning signals · honest backtests · trade planning</p>",
+            unsafe_allow_html=True,
+        )
     st.divider()
 
-    # ---- First-run setup gate (fail closed) ----
     if not users:
         _, mid, _ = st.columns([1, 2, 1])
         with mid:
@@ -135,50 +137,49 @@ def require_login():
             )
         st.stop()
 
-    # ---- Two-column hero: preview | login ----
-    left, right = st.columns([1.1, 1], gap="large")
+    left, right = st.columns([1.15, 1], gap="large")
 
     with left:
-        st.markdown("#### What's inside")
+        st.markdown("**What you get**")
         features = [
-            ("📊", "Interactive Charts", "Candlesticks, moving averages, RSI"),
-            ("🤖", "AI Signals", "Ensemble of neural net, XGBoost & forests"),
-            ("📈", "Multi-Day Predictions", "1 / 3 / 5 / 10 / 20-day outlooks"),
-            ("📉", "Honest Backtesting", "Walk-forward validation vs. buy & hold"),
-            ("🎯", "Trade Planning", "Auto support/resistance, stops & sizing"),
-            ("📝", "Signal Journal", "Every call scored against real prices"),
+            ("📊", "Interactive Charts", "Candlesticks, MAs, RSI, S/R levels"),
+            ("🤖", "AI Signals", "Regularized ensemble · multi-horizon outlook"),
+            ("📉", "Honest Backtests", "Walk-forward · costs · random benchmark"),
+            ("🎯", "Trade Planning", "Stops, targets, position sizing"),
+            ("📝", "Signal Journal", "Forward-test every call you log"),
+            ("🌐", "Global Model", "Pooled training when artifacts are present"),
         ]
         for icon, title, desc in features:
             st.markdown(
                 f"""
-                <div style="display:flex; align-items:flex-start; gap:0.7rem;
-                            padding:0.55rem 0.7rem; margin-bottom:0.45rem;
-                            background:rgba(54,179,126,0.06);
-                            border-left:3px solid #36b37e; border-radius:6px;">
-                    <div style="font-size:1.4rem; line-height:1;">{icon}</div>
-                    <div>
-                        <div style="font-weight:600;">{title}</div>
-                        <div style="font-size:0.85rem; color:rgba(230,233,239,0.6);">
-                            {desc}</div>
-                    </div>
-                </div>
+<div style="display:flex;gap:0.7rem;align-items:flex-start;padding:0.65rem 0.75rem;
+            margin-bottom:0.4rem;border-radius:12px;background:#161d27;
+            border:1px solid rgba(255,255,255,0.08);border-left:3px solid #36b37e;">
+  <div style="font-size:1.25rem;line-height:1;">{icon}</div>
+  <div>
+    <div style="font-weight:650;color:#e8ecf1;font-size:0.95rem;">{title}</div>
+    <div style="font-size:0.82rem;color:rgba(232,236,241,0.6);margin-top:0.1rem;">{desc}</div>
+  </div>
+</div>
                 """,
                 unsafe_allow_html=True,
             )
 
     with right:
-        st.markdown("#### 🔒 Secure Login")
+        st.markdown("**Secure login**")
         with st.form("login"):
             username = st.text_input("Username", placeholder="your username")
-            password = st.text_input("Password", type="password",
-                                      placeholder="your password")
-            submitted = st.form_submit_button("Access Dashboard ➜", type="primary",
-                                              use_container_width=True)
+            password = st.text_input(
+                "Password", type="password", placeholder="your password",
+            )
+            submitted = st.form_submit_button(
+                "Enter dashboard", type="primary", use_container_width=True,
+            )
 
         if submitted:
             attempts = st.session_state.get("auth_attempts", 0)
             if attempts >= 3:
-                time.sleep(min(attempts, 8))  # slow down brute force
+                time.sleep(min(attempts, 8))
             if check_credentials(username.strip(), password, users):
                 st.session_state["auth_user"] = username.strip()
                 st.session_state["auth_attempts"] = 0
@@ -187,25 +188,16 @@ def require_login():
                 st.session_state["auth_attempts"] = attempts + 1
                 st.error("Invalid username or password.")
 
-        st.caption("Access is restricted. Email **soumoster@gmail.com** "
-                   "to request credentials.")
+        st.caption(
+            "Restricted access · request credentials at **soumoster@gmail.com**"
+        )
 
-    # ---- Fixed footer ----
-    st.markdown(
-        """
-        <div style="
-            position: fixed; left: 0; bottom: 0; width: 100%;
-            text-align: center; padding: 0.6rem 1rem;
-            background: rgba(14, 17, 23, 0.92);
-            color: rgba(250, 250, 250, 0.6);
-            font-size: 0.8rem; z-index: 999;
-            border-top: 1px solid rgba(255,255,255,0.06);">
-            ⚠️ Educational purposes only — not financial advice &nbsp;·&nbsp;
-            © 2026 Soumoster Analytics
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if footer_bar is not None:
+        footer_bar(
+            "Educational purposes only — not financial advice · © 2026 Soumoster Analytics"
+        )
+    else:
+        st.caption("Educational purposes only — not financial advice.")
 
     st.stop()
 
@@ -213,8 +205,10 @@ def require_login():
 def logout_button():
     """Sidebar logout control; call inside `with st.sidebar:`."""
     import streamlit as st
-    st.caption(f"Logged in as **{st.session_state.get('auth_user', '?')}**")
-    if st.button("🚪 Log out", use_container_width=True):
+
+    user = st.session_state.get("auth_user", "?")
+    st.caption(f"Signed in as **{user}**")
+    if st.button("Log out", use_container_width=True):
         st.session_state.pop("auth_user", None)
         st.rerun()
 

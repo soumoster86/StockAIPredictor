@@ -2,7 +2,10 @@
 import numpy as np
 import pandas as pd
 
-from journal import append_signal, load_journal, resolve_entry, resolve_journal, scorecard
+from journal import (
+    append_signal, load_journal, resolve_entry, resolve_journal, scorecard,
+    journal_path_for, safe_username,
+)
 
 REC = dict(signal_date="2026-05-01", symbol="TEST.NS", name="Test",
            model_type="Ensemble", signal="BUY", probability=0.68, rating="Buy",
@@ -20,6 +23,25 @@ def test_append_and_dedupe(tmp_path):
     assert append_signal(REC, p) is True
     assert append_signal(REC, p) is False
     assert len(load_journal(p)) == 1
+
+
+def test_safe_username_and_per_user_paths(tmp_path, monkeypatch):
+    assert safe_username("Alice/Bob") == "Alice_Bob"
+    assert safe_username("") == "anonymous"
+    # Redirect journal dir into tmp so tests stay isolated
+    import journal as J
+    monkeypatch.setattr(J, "JOURNAL_DIR", tmp_path / "journals")
+    p_a = journal_path_for("alice")
+    p_b = journal_path_for("bob")
+    assert p_a != p_b
+    assert p_a.name == "alice.csv"
+    assert append_signal(REC, user="alice") is True
+    assert append_signal(REC, user="bob") is True
+    assert len(load_journal(user="alice")) == 1
+    assert len(load_journal(user="bob")) == 1
+    # Different users do not share rows
+    assert append_signal(REC, user="alice") is False
+    assert len(load_journal(user="alice")) == 1
 
 
 def test_target_hit():

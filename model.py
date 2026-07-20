@@ -1,6 +1,7 @@
 # =============================
 # model.py
 # =============================
+import os
 import numpy as np
 import pandas as pd
 import torch
@@ -33,13 +34,13 @@ MODEL_TYPES = ["Ensemble (NN + XGBoost + RF)", "Neural Network", "LSTM", "GRU"]
 # =====================================================================
 
 class StockModel(nn.Module):
-    """Tabular MLP. Outputs raw logits; sigmoid applied at inference."""
+    """Tabular MLP with light dropout. Outputs raw logits; sigmoid at inference."""
 
-    def __init__(self, input_size):
+    def __init__(self, input_size, dropout=0.2):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_size, 64), nn.ReLU(),
-            nn.Linear(64, 32), nn.ReLU(),
+            nn.Linear(input_size, 64), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(64, 32), nn.ReLU(), nn.Dropout(dropout * 0.5),
             nn.Linear(32, 1),
         )
 
@@ -51,15 +52,16 @@ class SequenceNet(nn.Module):
     """LSTM/GRU over a window of daily feature vectors; the final hidden
     state feeds a linear head. Outputs raw logits."""
 
-    def __init__(self, input_size, rnn_type="lstm", hidden=32):
+    def __init__(self, input_size, rnn_type="lstm", hidden=32, dropout=0.15):
         super().__init__()
         rnn_cls = nn.LSTM if rnn_type == "lstm" else nn.GRU
         self.rnn = rnn_cls(input_size, hidden, batch_first=True)
+        self.drop = nn.Dropout(dropout)
         self.head = nn.Linear(hidden, 1)
 
     def forward(self, x):           # x: (batch, time, features)
         out, _ = self.rnn(x)
-        return self.head(out[:, -1, :])
+        return self.head(self.drop(out[:, -1, :]))
 
 
 # =====================================================================
@@ -71,15 +73,49 @@ def _pos_weight(y_t):
     return torch.tensor([(1.0 - pos_frac) / pos_frac])
 
 
-def _train_torch(model, X_t, y_t, epochs, lr=1e-3):
+def _train_torch(model, X_t, y_t, epochs, lr=1e-3, weight_decay=1e-4,
+                 val_frac=0.15, patience=12):
+    """Full-batch Adam with L2 + early stopping on a chronological val slice.
+
+    The last `val_frac` of the training rows are held out for early stopping
+    only (still inside the caller's train_end — no test leakage). Falls back
+    to fixed epochs when the set is too small to split."""
     criterion = nn.BCEWithLogitsLoss(pos_weight=_pos_weight(y_t))
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    model.train()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    n = int(X_t.shape[0])
+    n_val = int(n * val_frac) if n >= 60 else 0
+    if n_val >= 15:
+        X_tr, y_tr = X_t[:-n_val], y_t[:-n_val]
+        X_val, y_val = X_t[-n_val:], y_t[-n_val:]
+    else:
+        X_tr, y_tr, X_val, y_val = X_t, y_t, None, None
+
+    best_state, best_val, stall = None, float("inf"), 0
     for _ in range(epochs):
+        model.train()
         optimizer.zero_grad()
-        loss = criterion(model(X_t), y_t)
+        loss = criterion(model(X_tr), y_tr)
         loss.backward()
         optimizer.step()
+
+        if X_val is None:
+            continue
+        model.eval()
+        with torch.no_grad():
+            vloss = float(criterion(model(X_val), y_val).item())
+        if vloss < best_val - 1e-5:
+            best_val = vloss
+            best_state = {k: v.detach().cpu().clone()
+                          for k, v in model.state_dict().items()}
+            stall = 0
+        else:
+            stall += 1
+            if stall >= patience:
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
     return model
 
 
@@ -257,22 +293,41 @@ def calibration_metrics(probs, y, n_bins=8):
             'curve': curve.to_dict('records'), 'base_rate': base_rate}
 
 
+def _tree_ensemble_members():
+    """Stronger regularized trees for the soft-voting ensemble."""
+    members = [
+        TabularNNPredictor(),
+        TreePredictor(RandomForestClassifier(
+            n_estimators=400, max_depth=5, min_samples_leaf=25,
+            max_features="sqrt", class_weight="balanced_subsample",
+            random_state=SEED, n_jobs=-1,
+        ), "Random Forest"),
+    ]
+    if HAS_XGB:
+        members.append(TreePredictor(XGBClassifier(
+            n_estimators=250, max_depth=3, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.8,
+            reg_lambda=1.5, reg_alpha=0.1, min_child_weight=5,
+            eval_metric="logloss", random_state=SEED,
+        ), "XGBoost"))
+    else:
+        # sklearn histogram GBDT is a solid XGB stand-in when xgboost
+        # is unavailable (macOS / slim envs).
+        try:
+            from sklearn.ensemble import HistGradientBoostingClassifier
+            members.append(TreePredictor(HistGradientBoostingClassifier(
+                max_depth=4, learning_rate=0.06, max_iter=200,
+                l2_regularization=1.0, min_samples_leaf=25,
+                random_state=SEED,
+            ), "HistGBDT"))
+        except ImportError:
+            pass
+    return members
+
+
 def make_predictor(model_type):
     if model_type.startswith("Ensemble"):
-        members = [
-            TabularNNPredictor(),
-            TreePredictor(RandomForestClassifier(
-                n_estimators=300, max_depth=5, min_samples_leaf=20,
-                class_weight="balanced_subsample", random_state=SEED, n_jobs=-1,
-            ), "Random Forest"),
-        ]
-        if HAS_XGB:
-            members.append(TreePredictor(XGBClassifier(
-                n_estimators=200, max_depth=3, learning_rate=0.05,
-                subsample=0.8, colsample_bytree=0.8,
-                eval_metric="logloss", random_state=SEED,
-            ), "XGBoost"))
-        return EnsemblePredictor(members)
+        return EnsemblePredictor(_tree_ensemble_members())
     if model_type == "LSTM":
         return SequencePredictor("lstm")
     if model_type == "GRU":
@@ -703,27 +758,39 @@ def find_support_resistance(data, lookback=252, swing_window=10, cluster_pct=0.0
 
 
 def compute_trade_plan(data, support=None, resistance=None,
-                       atr_stop_mult=1.5, atr_target_mult=3.0, min_rr=1.5):
+                       atr_stop_mult=1.5, atr_target_mult=3.0, min_rr=1.5,
+                       min_stop_atr_mult=0.5):
     """ATR-based entry/stop/target for a long trade at the current price.
 
     Stop: 1.5x ATR below entry — tightened to just below support when a
-    support level sits inside that band (structure beats formula).
+    support level sits inside that band (structure beats formula). Support
+    is ignored when it would make the stop tighter than `min_stop_atr_mult`
+    × ATR (noise-tight floors create absurd reward:risk ratios).
     Target: nearest resistance if it offers at least `min_rr` reward:risk,
     otherwise 3x ATR above entry."""
     entry = float(data['Close'].iloc[-1])
     atr = float(data['ATR_pct'].iloc[-1]) * entry
+    min_risk = max(min_stop_atr_mult * atr, 1e-9)
 
     stop = entry - atr_stop_mult * atr
     stop_basis = f"{atr_stop_mult:.1f}× ATR below entry"
     if support is not None and stop < support < entry:
-        stop = support * 0.995
-        stop_basis = "just below the nearest support"
+        struct_stop = support * 0.995
+        if entry - struct_stop >= min_risk:
+            stop = struct_stop
+            stop_basis = "just below the nearest support"
+        # else: keep ATR stop — support is noise-close to entry
+
+    # Absolute floor so risk distance never collapses below min_stop_atr_mult×ATR
+    if entry - stop < min_risk:
+        stop = entry - min_risk
+        stop_basis = f"{min_stop_atr_mult:.1f}× ATR below entry (floor)"
 
     risk_per_share = entry - stop
 
     target = entry + atr_target_mult * atr
     target_basis = f"{atr_target_mult:.1f}× ATR above entry"
-    if resistance is not None and resistance > entry:
+    if resistance is not None and resistance > entry and risk_per_share > 0:
         rr_at_resistance = (resistance - entry) / risk_per_share
         if rr_at_resistance >= min_rr:
             target = resistance
@@ -734,7 +801,7 @@ def compute_trade_plan(data, support=None, resistance=None,
         'stop': float(stop),
         'target': float(target),
         'risk_per_share': float(risk_per_share),
-        'reward_risk': float((target - entry) / risk_per_share),
+        'reward_risk': float((target - entry) / risk_per_share) if risk_per_share > 0 else float('nan'),
         'atr': float(atr),
         'stop_basis': stop_basis,
         'target_basis': target_basis,
@@ -780,12 +847,121 @@ def make_fast_predictor():
         return TreePredictor(XGBClassifier(
             n_estimators=150, max_depth=3, learning_rate=0.07,
             subsample=0.8, colsample_bytree=0.8,
+            reg_lambda=1.5, min_child_weight=5,
             eval_metric="logloss", random_state=SEED, n_jobs=2,
         ), "XGBoost")
     return TreePredictor(RandomForestClassifier(
         n_estimators=150, max_depth=5, min_samples_leaf=20,
-        class_weight="balanced_subsample", random_state=SEED, n_jobs=2,
+        max_features="sqrt", class_weight="balanced_subsample",
+        random_state=SEED, n_jobs=2,
     ), "Random Forest")
+
+
+def _scan_result(prob, cm, model_name, thresholds=DEFAULT_THRESHOLDS, source="per-stock"):
+    entry, exit_ = thresholds
+    signal = "BUY" if prob > entry else "SELL" if prob < exit_ else "HOLD"
+    return {
+        'probability': float(prob),
+        'signal': signal,
+        'rating': rating_from_prob(prob),
+        'accuracy': cm['accuracy'],
+        'baseline': cm['baseline_accuracy'],
+        'model': model_name,
+        'source': source,
+    }
+
+
+def buy_score(probability, accuracy=None, baseline=None, risk=None,
+              reward_risk=None, to_support=None):
+    """Composite 0–100 score for ranking *long* candidates in the screener.
+
+    Higher is better. Weights favor model probability, then out-of-sample
+    edge, then structure (R:R, calmer risk, proximity to support). This is a
+    ranking heuristic for the watchlist — not a guarantee or recommendation.
+    """
+    p = float(probability) if probability is not None and np.isfinite(probability) else 0.5
+    p = float(np.clip(p, 0.0, 1.0))
+
+    edge = 0.0
+    if accuracy is not None and baseline is not None:
+        try:
+            edge = max(0.0, float(accuracy) - float(baseline))
+        except (TypeError, ValueError):
+            edge = 0.0
+
+    risk_term = 0.5
+    if risk is not None and np.isfinite(risk):
+        # 1 (calm) → 1.0, 10 (wild) → 0.0
+        risk_term = 1.0 - float(np.clip((float(risk) - 1.0) / 9.0, 0.0, 1.0))
+
+    rr_term = 0.0
+    if reward_risk is not None and np.isfinite(reward_risk):
+        # R:R 1.0 → 0, 3.0+ → 1
+        rr_term = float(np.clip((float(reward_risk) - 1.0) / 2.0, 0.0, 1.0))
+
+    support_term = 0.4  # neutral when unknown
+    if to_support is not None and np.isfinite(to_support):
+        ts = float(to_support)
+        if ts < 0:
+            support_term = 0.0  # already through support — riskier entry
+        elif ts <= 0.08:
+            support_term = 1.0 - ts / 0.08  # closer to floor = better
+        else:
+            support_term = max(0.0, 1.0 - (ts - 0.08) / 0.20)  # far above floor
+
+    score = (
+        50.0 * p
+        + 20.0 * min(edge / 0.08, 1.0)
+        + 12.0 * risk_term
+        + 12.0 * rr_term
+        + 6.0 * support_term
+    )
+    return float(np.clip(score, 0.0, 100.0))
+
+
+def rank_buy_candidates(scan_df, min_prob=0.55, max_risk=8.0,
+                        require_edge=True, top_n=10):
+    """Filter and rank a scan DataFrame into best long candidates.
+
+    Expects columns produced by `run_scan` (Screen, Probability Up, …).
+    Returns a copy sorted by Buy Score descending (empty if none qualify).
+    """
+    if scan_df is None or len(scan_df) == 0:
+        return pd.DataFrame()
+
+    df = scan_df.copy()
+    if "Buy Score" not in df.columns:
+        scores = []
+        for _, row in df.iterrows():
+            scores.append(buy_score(
+                row.get("Probability Up"),
+                row.get("Test Acc"),
+                row.get("Baseline"),
+                row.get("Risk"),
+                row.get("Reward Risk"),
+                row.get("To Support"),
+            ))
+        df["Buy Score"] = scores
+
+    buys = df[df["Screen"] == "BUY"].copy() if "Screen" in df.columns else df.copy()
+    if buys.empty:
+        return buys
+
+    if "Probability Up" in buys.columns:
+        buys = buys[buys["Probability Up"] >= float(min_prob)]
+    if max_risk is not None and "Risk" in buys.columns:
+        buys = buys[buys["Risk"] <= float(max_risk)]
+    if require_edge and "Test Acc" in buys.columns and "Baseline" in buys.columns:
+        buys = buys[buys["Test Acc"] >= buys["Baseline"]]
+
+    if buys.empty:
+        return buys
+
+    buys = buys.sort_values("Buy Score", ascending=False).reset_index(drop=True)
+    buys.insert(0, "Rank", range(1, len(buys) + 1))
+    if top_n is not None:
+        buys = buys.head(int(top_n))
+    return buys
 
 
 def quick_scan(data, thresholds=DEFAULT_THRESHOLDS):
@@ -815,18 +991,35 @@ def quick_scan(data, thresholds=DEFAULT_THRESHOLDS):
     live_Xs = live_scaler.transform(X)
     live_predictor = make_fast_predictor().fit(live_Xs, y, n)
     prob = live_predictor.predict_last(live_scaler.transform(data[FEATURES].values))
+    return _scan_result(prob, cm, predictor.name, thresholds, source="per-stock")
 
-    entry, exit_ = thresholds
-    signal = "BUY" if prob > entry else "SELL" if prob < exit_ else "HOLD"
 
-    return {
-        'probability': float(prob),
-        'signal': signal,
-        'rating': rating_from_prob(prob),
-        'accuracy': cm['accuracy'],
-        'baseline': cm['baseline_accuracy'],
-        'model': predictor.name,
-    }
+def quick_scan_global(data, bundle=None, thresholds=DEFAULT_THRESHOLDS):
+    """Screen one stock with a pre-trained global model — no per-stock fit.
+
+    Freezes the global weights, scores this stock's last-20% chronology for
+    indicative accuracy, and reports the latest probability. Prefer this in
+    the watchlist scanner when global artifacts are present (orders of
+    magnitude faster than training a tree per name)."""
+    if bundle is None:
+        bundle = load_global_model(1)
+    if bundle is None:
+        return None
+
+    predictor, scaler = bundle["predictor"], bundle["scaler"]
+    X, y, _ = _masked(data, 'Target_1')
+    if len(X) < 80:
+        return None
+
+    Xs = scaler.transform(X)
+    split = max(int(len(X) * 0.8), 1)
+    test_probs = predictor.predict_all(Xs)[split:]
+    t_ok = np.isfinite(test_probs)
+    if t_ok.sum() < 10:
+        return None
+    cm = _classification_metrics(test_probs[t_ok], y[split:][t_ok])
+    prob = predictor.predict_last(scaler.transform(data[FEATURES].values))
+    return _scan_result(prob, cm, "Global", thresholds, source="global")
 
 
 # =====================================================================
@@ -834,12 +1027,29 @@ def quick_scan(data, thresholds=DEFAULT_THRESHOLDS):
 # (Phase 1 — trained offline by train_global.py, loaded here.)
 # =====================================================================
 
-GLOBAL_MODEL_DIR = "global_models"
+# Override with env GLOBAL_MODEL_DIR for external/LFS-synced model stores
+# (e.g. /data/models or a mounted volume on cloud).
+GLOBAL_MODEL_DIR = os.environ.get("GLOBAL_MODEL_DIR", "global_models")
 GLOBAL_META_FILE = "global_meta.json"
 
 
+def _day_ids_from_index(index):
+    """Calendar day keys as int (days since Unix epoch).
+
+    Unit-agnostic: pandas may store indexes as datetime64[ns] or [us];
+    using .asi8 + Timestamp would mis-decode us as ns and collapse dates
+    to 1970. Day-level ints avoid that class of bug entirely."""
+    ts = pd.to_datetime(index)
+    # .normalize() -> midnight; .days is timezone-safe for tz-naive series
+    return (ts.normalize() - pd.Timestamp("1970-01-01")).days.to_numpy(dtype=np.int64)
+
+
 def pool_training_data(per_stock_frames, target_col):
-    X_parts, y_parts, used = [], [], 0
+    """Stack labeled rows from every stock. Returns X, y, day_ids, n_stocks.
+
+    day_ids (int days since epoch) enable time-based train/test splits so
+    the global model is not evaluated on randomly shuffled future rows."""
+    X_parts, y_parts, d_parts, used = [], [], [], 0
     for sym, d in per_stock_frames.items():
         if d is None or d.empty or target_col not in d.columns:
             continue
@@ -848,30 +1058,90 @@ def pool_training_data(per_stock_frames, target_col):
             continue
         X_parts.append(sub[FEATURES].values)
         y_parts.append(sub[target_col].values.astype(float))
+        d_parts.append(_day_ids_from_index(sub.index))
         used += 1
     if not X_parts:
-        return None, None, 0
-    return np.vstack(X_parts), np.concatenate(y_parts), used
+        return None, None, None, 0
+    return (np.vstack(X_parts), np.concatenate(y_parts),
+            np.concatenate(d_parts), used)
 
 
-def train_global_predictor(per_stock_frames, target_col, model_type="Ensemble"):
-    X, y, n_stocks = pool_training_data(per_stock_frames, target_col)
+def train_global_predictor(per_stock_frames, target_col, model_type="Ensemble",
+                           train_frac=0.8, embargo_days=None):
+    """Train one global model with a **time-ordered** pool split.
+
+    All labeled rows across stocks are sorted by calendar day. The earliest
+    `train_frac` of unique trading days form the training set; later days
+    form the holdout. An embargo of `embargo_days` (default: horizon inferred
+    from target_col, else 5) drops borderline days so overlapping multi-day
+    labels cannot leak across the cut.
+
+    The final returned predictor is refit on **all** labeled rows so the
+    deployed artifact uses the full history; reported metrics still come from
+    the held-out time slice of the evaluation fit only.
+    """
+    X, y, day_ids, n_stocks = pool_training_data(per_stock_frames, target_col)
     if X is None or len(X) < 500:
         raise ValueError(f"Not enough pooled data for {target_col} "
                          f"({0 if X is None else len(X)} rows).")
-    rng = np.random.default_rng(SEED)
-    idx = rng.permutation(len(X))
-    split = int(len(X) * 0.8)
-    tr, te = idx[:split], idx[split:]
-    scaler = StandardScaler().fit(X[tr])
-    Xs = scaler.transform(X)
-    predictor = make_predictor(model_type)
-    order = np.concatenate([tr, te])
-    predictor.fit(Xs[order], y[order], len(tr))
-    test_probs = predictor.predict_all(Xs[te])
-    metrics = _classification_metrics(test_probs, y[te])
+
+    # Infer embargo from Target_h name when possible
+    if embargo_days is None:
+        embargo_days = 5
+        if isinstance(target_col, str) and target_col.startswith("Target_"):
+            try:
+                embargo_days = max(int(target_col.split("_", 1)[1]), 1)
+            except ValueError:
+                pass
+
+    order = np.argsort(day_ids, kind="mergesort")
+    X, y, day_ids = X[order], y[order], day_ids[order]
+
+    unique_days = np.unique(day_ids)
+    cut_i = max(int(len(unique_days) * train_frac), 1)
+    cut_i = min(cut_i, len(unique_days) - 1)
+    cut_day = int(unique_days[cut_i - 1])
+
+    train_mask = day_ids <= cut_day
+    test_mask = day_ids > cut_day + int(embargo_days)
+
+    n_train = int(train_mask.sum())
+    n_test = int(test_mask.sum())
+    cut_date = str(pd.Timestamp("1970-01-01") + pd.Timedelta(days=cut_day))[:10]
+    if n_train < 300 or n_test < 50:
+        raise ValueError(
+            f"Time split too thin for {target_col}: "
+            f"train={n_train}, test={n_test} (need ≥300/50). "
+            f"Cut day={cut_date}, embargo={embargo_days}d."
+        )
+
+    # Evaluation fit: train on past only, score the future holdout
+    scaler_eval = StandardScaler().fit(X[train_mask])
+    Xs_eval = scaler_eval.transform(X)
+    # Contiguous [train | rest] layout for predictor.fit(train_end=...)
+    eval_order = np.concatenate([np.where(train_mask)[0], np.where(~train_mask)[0]])
+    Xs_eval_ord = Xs_eval[eval_order]
+    y_eval_ord = y[eval_order]
+    predictor_eval = make_predictor(model_type)
+    predictor_eval.fit(Xs_eval_ord, y_eval_ord, n_train)
+
+    test_probs = predictor_eval.predict_all(Xs_eval)[test_mask]
+    t_ok = np.isfinite(test_probs)
+    metrics = _classification_metrics(test_probs[t_ok], y[test_mask][t_ok])
     metrics["n_stocks"] = int(n_stocks)
     metrics["n_rows"] = int(len(X))
+    metrics["n_train"] = n_train
+    metrics["n_test"] = n_test
+    metrics["split"] = "time"
+    metrics["cut_date"] = cut_date
+    metrics["embargo_days"] = int(embargo_days)
+
+    # Deploy fit: full history, same feature space
+    scaler = StandardScaler().fit(X)
+    Xs = scaler.transform(X)
+    predictor = make_predictor(model_type)
+    predictor.fit(Xs, y, len(X))
+
     return predictor, scaler, metrics
 
 
@@ -959,6 +1229,15 @@ def predict_with_global(data, bundle, calibrate=False):
     metrics['calibration'] = calibration_metrics(test_probs, y[val_end:])
     metrics['calibrated'] = bool(calibrate)
     metrics['source'] = 'global'
+    # Thresholds/backtest use this stock's chronology, but the global weights
+    # were trained on a pooled universe that usually includes this name —
+    # so accuracy here is "stock-specific thresholds", not pure OOS.
+    metrics['oos_note'] = (
+        "Global weights are pooled (may include this stock). "
+        "Thresholds and the test slice below are stock-specific; "
+        "treat accuracy as indicative, not fully out-of-sample. "
+        "Prefer Walk-Forward for a stricter check."
+    )
 
     # Live signal: the global predictor already encodes all its training;
     # no per-stock refit needed. Return it directly with its own scaler.

@@ -135,3 +135,106 @@ def test_trade_plan_rejects_noise_tight_support_stop():
 
     p2 = compute_trade_plan(d, support=120.0, resistance=136.0)
     assert p2["stop_basis"] == "just below the nearest support"
+
+
+def _mini_stock_frame(seed, n=400, start="2018-01-01"):
+    """Synthetic OHLCV + features for global-pool tests."""
+    rng = np.random.default_rng(seed)
+    idx = pd.bdate_range(start, periods=n)
+    rets = rng.normal(0.0004, 0.015, n)
+    close = 100 * np.exp(np.cumsum(rets))
+    df = pd.DataFrame({
+        "Open": close * (1 + rng.normal(0, 0.002, n)),
+        "High": close * (1 + np.abs(rng.normal(0.005, 0.003, n))),
+        "Low": close * (1 - np.abs(rng.normal(0.005, 0.003, n))),
+        "Close": close,
+        "Volume": rng.integers(1e5, 1e6, n),
+    }, index=idx)
+    return add_features(df)
+
+
+def test_train_global_uses_time_split_not_shuffle():
+    """Pooled global training must cut by calendar date (with embargo)."""
+    from model import train_global_predictor
+
+    frames = {
+        "AAA.NS": _mini_stock_frame(1, 450, "2018-01-01"),
+        "BBB.NS": _mini_stock_frame(2, 450, "2018-03-01"),
+        "CCC.NS": _mini_stock_frame(3, 450, "2018-06-01"),
+    }
+    _, _, metrics = train_global_predictor(
+        frames, "Target_1", model_type="Neural Network", train_frac=0.8,
+    )
+    assert metrics["split"] == "time"
+    assert metrics["n_train"] >= 300
+    assert metrics["n_test"] >= 50
+    assert metrics["embargo_days"] == 1
+    assert "cut_date" in metrics
+    assert metrics["n_stocks"] == 3
+
+
+def test_buy_score_orders_strong_over_weak():
+    from model import buy_score, rank_buy_candidates
+
+    strong = buy_score(0.72, accuracy=0.58, baseline=0.50, risk=3.0,
+                       reward_risk=2.5, to_support=0.03)
+    weak = buy_score(0.52, accuracy=0.48, baseline=0.50, risk=9.0,
+                     reward_risk=1.0, to_support=0.25)
+    assert 0 <= weak < strong <= 100
+
+    df = pd.DataFrame([
+        {"Name": "A", "Symbol": "A.NS", "Screen": "BUY", "Probability Up": 0.70,
+         "Test Acc": 0.56, "Baseline": 0.50, "Risk": 4.0, "Reward Risk": 2.0,
+         "To Support": 0.02, "Buy Score": strong},
+        {"Name": "B", "Symbol": "B.NS", "Screen": "BUY", "Probability Up": 0.56,
+         "Test Acc": 0.49, "Baseline": 0.50, "Risk": 5.0, "Reward Risk": 1.5,
+         "To Support": 0.10, "Buy Score": weak},
+        {"Name": "C", "Symbol": "C.NS", "Screen": "SELL", "Probability Up": 0.40,
+         "Test Acc": 0.55, "Baseline": 0.50, "Risk": 3.0, "Reward Risk": 2.0,
+         "To Support": 0.01, "Buy Score": 30.0},
+    ])
+    # require_edge drops B (acc < baseline); SELL C excluded
+    picks = rank_buy_candidates(df, min_prob=0.55, max_risk=8.0,
+                                require_edge=True, top_n=5)
+    assert list(picks["Symbol"]) == ["A.NS"]
+    assert picks.iloc[0]["Rank"] == 1
+
+
+def test_quick_scan_global_uses_frozen_weights():
+    """Scanner global path must not train a new tree; returns source=global."""
+    from model import train_global_predictor, quick_scan_global
+    from data import FEATURES
+
+    frames = {
+        "AAA.NS": _mini_stock_frame(20, 500),
+        "BBB.NS": _mini_stock_frame(21, 500),
+    }
+    predictor, scaler, _ = train_global_predictor(
+        frames, "Target_1", model_type="Neural Network",
+    )
+    bundle = {"predictor": predictor, "scaler": scaler, "features": list(FEATURES)}
+    scan = quick_scan_global(frames["AAA.NS"], bundle=bundle)
+    assert scan is not None
+    assert scan["source"] == "global"
+    assert scan["model"] == "Global"
+    assert 0.0 <= scan["probability"] <= 1.0
+    assert scan["signal"] in ("BUY", "SELL", "HOLD")
+
+
+def test_predict_with_global_sets_honest_oos_note():
+    from model import train_global_predictor, predict_with_global
+    from data import FEATURES
+
+    frames = {
+        "AAA.NS": _mini_stock_frame(10, 500),
+        "BBB.NS": _mini_stock_frame(11, 500),
+    }
+    predictor, scaler, _ = train_global_predictor(
+        frames, "Target_1", model_type="Neural Network",
+    )
+    bundle = {"predictor": predictor, "scaler": scaler, "features": list(FEATURES)}
+    out = predict_with_global(frames["AAA.NS"], bundle, calibrate=False)
+    metrics = out[2]
+    assert metrics["source"] == "global"
+    note = metrics["oos_note"].lower()
+    assert "indicative" in note or "not fully out-of-sample" in note
