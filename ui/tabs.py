@@ -417,7 +417,8 @@ def render_scanner_tab(ctx):
         )
     else:
         def _jump_to(stock_name):
-            st.session_state["stock_choice"] = stock_name
+            from ui.stock_picker import set_stock_pick
+            set_stock_pick(stock_name)
 
         # Responsive grid of pick cards
         cols = st.columns(min(3, len(picks)))

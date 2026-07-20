@@ -132,7 +132,7 @@ def test_app_loads_full_universe_when_present():
 
 def test_ui_package_exists():
     expected = ["help_text.py", "styles.py", "services.py", "sidebar.py",
-                "header.py", "tabs.py", "theme.py"]
+                "header.py", "tabs.py", "theme.py", "stock_picker.py"]
     for name in expected:
         assert (UI_DIR / name).exists(), f"missing ui/{name}"
 

@@ -8,6 +8,7 @@ from ui.services import (
     load_stock_list, run_scan,
 )
 from ui.theme import brand_strip
+from ui.stock_picker import render_sidebar_stock_picker, resolve_selection
 
 
 def render_sidebar():
@@ -49,28 +50,8 @@ def render_sidebar():
             f"screener processes up to **{SCAN_MAX}** names per run"
         )
 
-        _options = list(stocks.keys()) + ["Custom symbol…"]
-        if st.session_state.get("stock_choice") not in _options:
-            st.session_state.pop("stock_choice", None)
-
-        choice = st.selectbox(
-            "Stock",
-            options=_options,
-            key="stock_choice",
-            help="Type to search. Pick 'Custom symbol…' for any Yahoo ticker.",
-        )
-
-        if choice == "Custom symbol…":
-            symbol = st.text_input(
-                "Yahoo Finance symbol",
-                placeholder="e.g. TATAPOWER.NS or AAPL",
-            ).strip().upper()
-            display_name = symbol
-        else:
-            symbol = stocks[choice]
-            display_name = choice
-
-        st.caption("NSE tickers end in **.NS**")
+        render_sidebar_stock_picker(stocks)
+        symbol, display_name = resolve_selection(stocks)
 
         st.markdown("**Model**")
         _has_global = global_model_available()
@@ -110,7 +91,8 @@ def render_sidebar():
             st.rerun()
 
         def _jump_to(stock_name):
-            st.session_state["stock_choice"] = stock_name
+            from ui.stock_picker import set_stock_pick
+            set_stock_pick(stock_name)
 
         with st.expander("Screener", expanded=False):
             if st.button(

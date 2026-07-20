@@ -18,6 +18,7 @@ from model import (
 from ui.theme import inject_global_css, page_hero, footer_bar
 from ui.sidebar import render_sidebar
 from ui.header import render_header
+from ui.stock_picker import render_main_stock_picker
 from ui.tabs import (
     render_prediction_tab, render_scanner_tab, render_plan_tab,
     render_backtest_tab, render_walkforward_tab, render_journal_tab,
@@ -36,8 +37,6 @@ inject_global_css()
 current_user = require_login()
 
 sidebar = render_sidebar()
-symbol = sidebar["symbol"]
-display_name = sidebar["display_name"]
 model_type = sidebar["model_type"]
 calibrate = sidebar["calibrate"]
 use_global = sidebar["use_global"]
@@ -57,8 +56,14 @@ page_hero(
     chips=chips,
 )
 
+# Main-page stock picker (synced with sidebar)
+symbol, display_name = render_main_stock_picker(stocks)
+
 if not symbol:
-    st.info("Pick a stock from the sidebar to get started.")
+    st.info(
+        "Pick a stock from the **Select stock** dropdown above "
+        "(or from the sidebar) to get started."
+    )
     st.stop()
 
 raw = get_data(symbol)
