@@ -4,7 +4,8 @@ import pandas as pd
 
 from journal import (
     append_signal, load_journal, resolve_entry, resolve_journal, scorecard,
-    journal_path_for, safe_username,
+    journal_path_for, safe_username, get_journal_config, journal_backend_info,
+    LocalCSVBackend, SupabaseBackend,
 )
 
 REC = dict(signal_date="2026-05-01", symbol="TEST.NS", name="Test",
@@ -63,6 +64,32 @@ def test_expired_open_and_sell_paths():
     sell = {**REC, "signal": "SELL"}
     r = resolve_entry(sell, prices([(1000, 960, 970)] * 20))
     assert r["status"] == "CLOSED" and r["outcome_return"] < 0
+
+
+def test_journal_config_defaults_to_local(monkeypatch):
+    monkeypatch.delenv("JOURNAL_BACKEND", raising=False)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+    cfg = get_journal_config()
+    assert cfg["backend"] in ("local", "supabase")
+    info = journal_backend_info()
+    assert "label" in info and "persistent" in info
+
+
+def test_local_backend_class_matches_path_api(tmp_path):
+    be = LocalCSVBackend()
+    p = tmp_path / "j.csv"
+    assert be.append(REC, path=p) is True
+    assert be.append(REC, path=p) is False
+    assert len(be.load(path=p)) == 1
+
+
+def test_supabase_backend_builds_headers():
+    be = SupabaseBackend("https://example.supabase.co", "test-key", "signal_journal")
+    h = be._headers(prefer="return=minimal")
+    assert h["apikey"] == "test-key"
+    assert "Bearer test-key" in h["Authorization"]
+    assert h["Prefer"] == "return=minimal"
 
 
 def test_scorecard_math_and_fetch_failure():

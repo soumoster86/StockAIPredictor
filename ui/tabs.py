@@ -10,7 +10,7 @@ from model import (
 )
 from journal import (
     load_journal, append_signal, resolve_journal, scorecard,
-    journal_path_for, MAX_HOLD_DAYS,
+    journal_path_for, journal_backend_info, MAX_HOLD_DAYS,
 )
 from ui.help_text import HELP
 from ui.styles import (
@@ -18,7 +18,10 @@ from ui.styles import (
     factor_row_html,
 )
 from ui.services import (
-    SCAN_MAX, get_data, get_index, get_horizons, run_scan, run_walk_forward,
+    SCAN_BATCH, SCAN_MAX, get_data, get_index, get_horizons, run_walk_forward,
+    ensure_scan_session, reset_scan_session, advance_scan_session,
+    scan_progress, get_scan_results, precomputed_status,
+    seed_session_from_precomputed, maybe_autoseed_precomputed,
 )
 from ui.theme import (
     section_header, plotly_layout, ACCENT, RED, AMBER, BLUE, TEXT_MUTED,
@@ -298,12 +301,16 @@ def render_scanner_tab(ctx):
     symbol = ctx["symbol"]
     signal = ctx["signal"]
 
+    ensure_scan_session(stocks)
+    # Instant path: seed from offline rankings when session is empty & file is fresh
+    maybe_autoseed_precomputed(stocks)
+    prog = scan_progress(stocks)
+    pre = precomputed_status(stocks)
+
     section_header("Screener")
-    st.caption("Watchlist screen · find the best long candidates right now")
-    _scan_n = min(len(stocks), SCAN_MAX)
-    _scan_note = (
-        f" (first **{SCAN_MAX}** of {len(stocks)})"
-        if len(stocks) > SCAN_MAX else ""
+    st.caption(
+        f"Full-universe screen · **{prog['total']}** names in list · "
+        f"live batches of **{SCAN_BATCH}** · optional precomputed rankings"
     )
     _engine = (
         "global model"
@@ -311,13 +318,47 @@ def render_scanner_tab(ctx):
         else "fast per-stock tree"
     )
     st.markdown(
-        f"Screens your watchlist{_scan_note} and ranks **long candidates** with a "
-        f"**Buy Score** (model probability + OOS edge + risk + reward:risk + "
-        f"proximity to support). Engine: **{_engine}**. "
-        "This is a **screen**, not the full stock Signal — open a name for "
-        "thresholds, backtest, and walk-forward before acting. "
-        "**Educational only — not investment advice.**"
+        f"Prefer **precomputed rankings** (offline job) for instant results, or "
+        f"walk the list **live in batches of {SCAN_BATCH}**. Engine: **{_engine}**. "
+        "This is a **screen**, not the full stock Signal — open a name before "
+        "acting. **Educational only — not investment advice.**"
     )
+
+    # ---- Precomputed rankings card ----
+    section_header("Precomputed rankings")
+    if pre["available"]:
+        stale_note = (
+            f" · ⚠️ file is **{pre.get('age_hours')}h** old (stale)"
+            if pre.get("stale") else " · fresh"
+        )
+        st.success(
+            f"Offline file ready · **{pre['n_watchlist']}** names overlap your "
+            f"watchlist (file has {pre['n_file']}) · as of **{pre.get('asof') or '—'}**"
+            f"{stale_note}"
+        )
+        pc1, pc2 = st.columns(2)
+        with pc1:
+            if st.button(
+                "Load precomputed rankings", type="primary",
+                use_container_width=True,
+                help="Instant load from rankings/rankings_latest.csv (no Yahoo calls).",
+            ):
+                if seed_session_from_precomputed(stocks, allow_stale=True):
+                    st.toast("Loaded precomputed rankings", icon="⚡")
+                    st.rerun()
+                else:
+                    st.warning("Could not load precomputed file.")
+        with pc2:
+            st.caption(
+                "Regenerate offline:  \n"
+                "`python scripts/precompute_rankings.py`"
+            )
+    else:
+        st.info(
+            "No precomputed rankings found (or none match this watchlist). "
+            "Run offline: `python scripts/precompute_rankings.py` then restart "
+            "the app — or use **live batch scan** below."
+        )
 
     with st.expander("How Buy Score is calculated", expanded=False):
         st.markdown(
@@ -336,41 +377,130 @@ def render_scanner_tab(ctx):
             """
         )
 
-    if st.button(
-        f"Run screener ({_scan_n} stocks)", type="primary",
-        help=HELP["scanner"],
-    ):
-        st.session_state["scan_requested"] = True
-
-    if not st.session_state.get("scan_requested"):
+    # ---- Live batch controls ----
+    section_header("Live batch scan")
+    if prog.get("source") == "precomputed" and prog.get("asof"):
         st.info(
-            "Click **Run screener** to rank the watchlist and show best-to-buy "
-            "picks. First run downloads data in one batched request; results "
-            "cache for about an hour."
+            f"⚡ Showing **precomputed** rankings (as of **{prog['asof']}**). "
+            "Use **Rescan from start** below to switch to a live Yahoo walk."
+        )
+
+    attempted = prog["attempted"]
+    total = max(prog["total"], 1)
+    live_mode = prog.get("source") != "precomputed"
+    st.progress(
+        min(attempted / total, 1.0) if live_mode else 1.0,
+        text=(
+            f"Precomputed · {prog['succeeded']} names · as of {prog.get('asof') or '—'}"
+            if prog.get("source") == "precomputed" else
+            f"Covered {prog['attempted']} / {prog['total']} symbols · "
+            f"{prog['succeeded']} scored · {prog['failed']} skipped · "
+            f"{prog['remaining']} remaining"
+        ),
+    )
+
+    b1, b2, b3, b4 = st.columns([1.2, 1.2, 1.1, 1.1])
+    with b1:
+        start_label = (
+            f"Start live scan ({SCAN_BATCH})"
+            if not prog["active"] and prog["attempted"] == 0
+            else f"Rescan from start ({SCAN_BATCH})"
+        )
+        if st.button(start_label, type="primary", use_container_width=True,
+                     help=HELP["scanner"]):
+            reset_scan_session(stocks)
+            with st.spinner(f"Scanning first batch of {SCAN_BATCH}…"):
+                advance_scan_session(stocks, n_batches=1)
+            st.rerun()
+    with b2:
+        next_n = min(SCAN_BATCH, prog["remaining"]) if prog["remaining"] else SCAN_BATCH
+        next_disabled = (
+            prog.get("source") == "precomputed"
+            or prog["complete"]
+            or prog["total"] == 0
+        )
+        if st.button(
+            f"Scan next batch ({next_n})" if prog["remaining"] else "Scan complete",
+            use_container_width=True,
+            disabled=next_disabled,
+            help="Continue through the full universe without losing prior results.",
+        ):
+            with st.spinner(f"Scanning next {SCAN_BATCH}…"):
+                advance_scan_session(stocks, n_batches=1)
+            st.rerun()
+    with b3:
+        multi = min(3, max(1, (prog["remaining"] + SCAN_BATCH - 1) // SCAN_BATCH))
+        multi_disabled = (
+            prog.get("source") == "precomputed"
+            or prog["complete"]
+            or prog["total"] == 0
+        )
+        if st.button(
+            f"Scan +{multi} batches",
+            use_container_width=True,
+            disabled=multi_disabled,
+            help="Run up to 3 batches in a row (faster coverage; still rate-limit aware).",
+        ):
+            with st.spinner(f"Scanning up to {multi} batches…"):
+                advance_scan_session(stocks, n_batches=multi)
+            st.rerun()
+    with b4:
+        if st.button("Reset scan", use_container_width=True):
+            reset_scan_session(stocks)
+            st.rerun()
+
+    if prog["attempted"] == 0 and prog.get("source") != "precomputed":
+        st.info(
+            f"Load **precomputed rankings** above (if available), or "
+            f"**Start live scan** for the first **{SCAN_BATCH}** names, then "
+            f"**Scan next batch** until you cover all **{prog['total']}**."
         )
         return
 
-    scan_df, scan_failures = run_scan(tuple(stocks.items()))
+    scan_df = get_scan_results()
+    scan_failures = st.session_state.get("scan_failures") or []
 
     if scan_df.empty:
         st.warning(
-            "No stocks could be scanned — check symbols or try later "
-            "(Yahoo may be rate-limiting)."
+            "No stocks scored yet — load precomputed rankings or run a live batch. "
+            "Yahoo may be rate-limiting live scans."
         )
         if scan_failures:
-            with st.expander(f"{len(scan_failures)} stock(s) skipped"):
-                for sym, reason in scan_failures:
+            with st.expander(f"{len(scan_failures)} stock(s) skipped so far"):
+                for sym, reason in scan_failures[:80]:
                     st.markdown(f"- `{sym}` — {reason}")
+                if len(scan_failures) > 80:
+                    st.caption(f"…and {len(scan_failures) - 80} more")
         return
 
     n_buy = int((scan_df["Screen"] == "BUY").sum())
     n_sell = int((scan_df["Screen"] == "SELL").sum())
-    sc1, sc2, sc3, sc4 = st.columns(4)
-    sc1.metric("Scanned", f"{len(scan_df)}")
-    sc2.metric("BUY screens", n_buy)
-    sc3.metric("SELL screens", n_sell)
+    sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+    if prog.get("source") == "precomputed":
+        sc1.metric("Source", "Precomputed")
+    else:
+        sc1.metric("Coverage", f"{prog['attempted']}/{prog['total']}")
+    sc2.metric("Scored", f"{len(scan_df)}")
+    sc3.metric("BUY screens", n_buy)
+    sc4.metric("SELL screens", n_sell)
     top_score = float(scan_df["Buy Score"].max()) if "Buy Score" in scan_df else 0
-    sc4.metric("Top buy score", f"{top_score:.0f}")
+    sc5.metric("Top buy score", f"{top_score:.0f}")
+
+    if prog.get("source") == "precomputed":
+        st.success(
+            f"Precomputed ranking · **{len(scan_df)}** names · "
+            f"as of **{prog.get('asof') or '—'}**."
+        )
+    elif prog["complete"]:
+        st.success(
+            f"Full list covered ({prog['total']} symbols attempted). "
+            f"**{len(scan_df)}** scored · **{prog['failed']}** skipped."
+        )
+    else:
+        st.caption(
+            f"Partial universe — rankings use the **{len(scan_df)}** names scored "
+            f"so far. Keep clicking **Scan next batch** to improve coverage."
+        )
 
     current_screen = scan_df[scan_df["Symbol"] == symbol]
     if not current_screen.empty:
@@ -519,20 +649,24 @@ def render_scanner_tab(ctx):
             },
         )
 
+    src = prog.get("source") or "live"
     st.caption(
-        "Screen only — default thresholds, no per-stock tuning. "
-        "Open a stock for the full Signal. Cached ~1 hour · not financial advice."
+        f"Source **{src}** · coverage **{prog['attempted']}/{prog['total']}** · "
+        "screen only — default thresholds. Open a stock for the full Signal. "
+        "Not financial advice."
     )
     st.download_button(
-        "Download full scan CSV",
+        "Download scored results CSV",
         scan_df.to_csv(index=False).encode(),
-        file_name="best_buys_scan.csv", mime="text/csv",
+        file_name="screener_results.csv", mime="text/csv",
     )
 
     if scan_failures:
-        with st.expander(f"{len(scan_failures)} stock(s) skipped"):
-            for sym, reason in scan_failures:
+        with st.expander(f"{len(scan_failures)} stock(s) skipped so far"):
+            for sym, reason in scan_failures[:100]:
                 st.markdown(f"- `{sym}` — {reason}")
+            if len(scan_failures) > 100:
+                st.caption(f"…and {len(scan_failures) - 100} more")
 
 
 def render_plan_tab(ctx):
@@ -840,16 +974,29 @@ def render_journal_tab(ctx):
     current_user = ctx["current_user"]
 
     jpath = journal_path_for(current_user)
+    backend = journal_backend_info()
     section_header("Forward-test journal")
     st.markdown(
         "Backtests look **backward**; this journal looks **forward**. Log today's "
-        "signal and score it later against real prices — your private file is "
-        f"`{jpath.name}`."
+        "signal and score it later against real prices."
     )
+
+    if backend["persistent"]:
+        st.success(
+            f"Storage · **{backend['label']}** · {backend['detail']} · "
+            f"user `{current_user}`"
+        )
+    else:
+        st.warning(
+            f"Storage · **{backend['label']}** · {backend['detail']}. "
+            "On Streamlit Cloud this is wiped on restart. "
+            "Configure Supabase in secrets for persistence "
+            "(see `scripts/supabase_journal.sql`)."
+        )
 
     today = data.index[-1].strftime("%Y-%m-%d")
     if st.button(
-        f"📝 Log today's {signal} signal for {symbol}", type="primary",
+        f"Log today's {signal} signal for {symbol}", type="primary",
         help=HELP["journal"],
     ):
         record = {
@@ -863,17 +1010,27 @@ def render_journal_tab(ctx):
             "risk_score": risk['score'],
             "logged_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
         }
-        if append_signal(record, user=current_user):
+        try:
+            ok = append_signal(record, user=current_user)
+        except Exception as e:
+            st.error(f"Could not write journal: {e}")
+            ok = None
+        if ok is True:
             st.toast(f"Logged {signal} for {symbol}", icon="📝")
             st.success(
                 f"Logged: {signal} {symbol} @ {currency}{plan['entry']:,.2f} "
                 f"(stop {currency}{plan['stop']:,.2f} / "
                 f"target {currency}{plan['target']:,.2f})"
             )
-        else:
+        elif ok is False:
             st.info("Already logged today for this stock and model — one entry per day.")
 
-    jdf = load_journal(user=current_user)
+    try:
+        jdf = load_journal(user=current_user)
+    except Exception as e:
+        st.error(f"Could not load journal: {e}")
+        jdf = pd.DataFrame()
+
     if jdf.empty:
         st.info(
             "No signals logged yet. Log a few each day, come back in some weeks, "
@@ -924,14 +1081,18 @@ def render_journal_tab(ctx):
                 "outcome_return": st.column_config.NumberColumn("Return", format="percent"),
             },
         )
+        store_note = (
+            f"Cloud store · {backend['detail']}"
+            if backend["persistent"]
+            else f"Local file `{jpath}` — download often on Cloud"
+        )
         st.caption(
             f"BUY plans resolve when price touches stop or target, or expire after "
             f"{MAX_HOLD_DAYS} trading days. Same-day double-touches score as STOP "
-            f"(conservative). Stored in `{jpath}` — download regularly if you "
-            "redeploy; cloud hosts with ephemeral storage will lose files on restart."
+            f"(conservative). {store_note}."
         )
         st.download_button(
-            "⬇️ Download journal as CSV",
+            "Download journal as CSV",
             resolved.to_csv(index=False).encode(),
             file_name=f"signal_journal_{current_user}.csv", mime="text/csv",
         )

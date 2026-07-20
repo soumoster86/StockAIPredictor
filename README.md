@@ -107,11 +107,14 @@ signal. Open the stock for the full model signal before making any decision.
 
 ### Journal
 
-- Log the app's signal and trade plan (**one CSV per authenticated user** under
-  `journals/`).
+- Log the app's signal and trade plan (**per authenticated user**).
+- Storage backends:
+  - **local** (default): `journals/<user>.csv` — fine locally; ephemeral on Cloud
+  - **supabase**: cloud Postgres via secrets — survives redeploys
+    (`scripts/supabase_journal.sql` + `[journal]` secrets; see DEPLOYMENT.md)
 - Later resolve logged BUY plans against real price action.
 - Tracks target hit, stop hit, expired plans, win rate, and average return.
-- Download regularly on Streamlit Community Cloud (ephemeral disk).
+- Always download CSV from the Journal tab as a backup.
 
 ---
 
@@ -330,9 +333,12 @@ the model's own predictions.
 ├── auth.py             # Login gate and PBKDF2 password hashing
 ├── data.py             # Data download, feature engineering, targets
 ├── model.py            # Models, training, signals, backtests, trade planning
-├── journal.py          # Per-user signal journal and forward-test scoring
+├── journal.py          # Journal API + local/Supabase backends
 ├── train_global.py     # Offline trainer for the pooled global model
 ├── scripts/check_models.py  # Validate global_models/ (or GLOBAL_MODEL_DIR)
+├── scripts/precompute_rankings.py  # Offline full-universe screener job
+├── screener.py         # Pure batch-scan + rankings I/O (no Streamlit)
+├── rankings/           # rankings_latest.csv from precompute (optional commit)
 ├── stocks.csv          # Optional liquid list (upload / offline convenience)
 ├── stocks_universe.csv # Default full NSE-style watchlist (~2k+ names)
 ├── requirements.txt    # Python dependencies (pinned)
@@ -539,9 +545,17 @@ Optional shorter liquid list (for uploads / offline convenience):
 stocks.csv
 ```
 
-The stock picker loads the **full** universe. The in-app Screener still
-hard-caps at **80** symbols per run so Streamlit Community Cloud and Yahoo
-rate limits stay usable. Upload a CSV to replace the list for a session.
+The stock picker loads the **full** universe. The Screener supports:
+
+1. **Precomputed rankings** — run offline, load instantly in the app:
+   ```bash
+   python scripts/precompute_rankings.py
+   ```
+   Writes `rankings/rankings_latest.csv` (+ meta). Commit or sync that folder
+   for Streamlit Cloud.
+2. **Live batches** — walk the list in chunks of **80** (Scan next batch).
+
+Upload a CSV to replace the watchlist for a session.
 
 Expected columns:
 

@@ -4,8 +4,11 @@ import streamlit as st
 from model import MODEL_TYPES, HAS_XGB, global_model_available
 from ui.help_text import HELP
 from ui.services import (
-    STOCKS_FILE, STOCKS_UNIVERSE_FILE, DEFAULT_STOCKS, SCAN_MAX,
-    load_stock_list, run_scan,
+    STOCKS_FILE, STOCKS_UNIVERSE_FILE, DEFAULT_STOCKS, SCAN_MAX, SCAN_BATCH,
+    load_stock_list, ensure_scan_session, advance_scan_session,
+    scan_progress, get_scan_results, reset_scan_session,
+    maybe_autoseed_precomputed, seed_session_from_precomputed,
+    precomputed_status,
 )
 from ui.theme import brand_strip
 from ui.stock_picker import render_sidebar_stock_picker, resolve_selection
@@ -47,7 +50,7 @@ def render_sidebar():
 
         st.caption(
             f"**{list_source}** · full list in picker · "
-            f"screener processes up to **{SCAN_MAX}** names per run"
+            f"screener batches of **{SCAN_BATCH}**"
         )
 
         render_sidebar_stock_picker(stocks)
@@ -87,6 +90,7 @@ def render_sidebar():
             st.cache_data.clear()
             st.cache_resource.clear()
             st.session_state.pop("scan_requested", None)
+            reset_scan_session(stocks)
             st.toast("Caches cleared — reloading…", icon="🔄")
             st.rerun()
 
@@ -95,17 +99,40 @@ def render_sidebar():
             set_stock_pick(stock_name)
 
         with st.expander("Screener", expanded=False):
+            ensure_scan_session(stocks)
+            maybe_autoseed_precomputed(stocks)
+            sp = scan_progress(stocks)
+            pre = precomputed_status(stocks)
+            if sp.get("source") == "precomputed":
+                st.caption(f"⚡ Precomputed · {sp['succeeded']} names")
+            else:
+                st.caption(
+                    f"Coverage **{sp['attempted']}/{sp['total']}** · "
+                    f"{sp['succeeded']} scored"
+                )
+            if pre["available"] and sp.get("source") != "precomputed":
+                if st.button(
+                    "Load precomputed", key="sidebar_precomp",
+                    use_container_width=True,
+                ):
+                    seed_session_from_precomputed(stocks, allow_stale=True)
+                    st.rerun()
             if st.button(
-                "Run screener", key="sidebar_scan",
+                f"Live batch ({SCAN_BATCH})", key="sidebar_scan",
                 use_container_width=True, type="primary", help=HELP["scanner"],
             ):
-                st.session_state["scan_requested"] = True
+                if sp.get("source") == "precomputed" or sp["attempted"] == 0:
+                    reset_scan_session(stocks)
+                advance_scan_session(stocks, n_batches=1)
+                st.rerun()
 
-            if st.session_state.get("scan_requested"):
+            if sp["attempted"] == 0 and sp.get("source") != "precomputed":
+                st.caption("Open **Screener** for full controls.")
+            else:
                 from model import rank_buy_candidates
-                side_df, _side_fails = run_scan(tuple(stocks.items()))
+                side_df = get_scan_results()
                 if side_df.empty:
-                    st.caption("No results — open the Screener section.")
+                    st.caption("No scores yet — try another batch.")
                 else:
                     picks = rank_buy_candidates(
                         side_df, min_prob=0.55, max_risk=8.0,
@@ -117,7 +144,7 @@ def render_sidebar():
                             require_edge=False, top_n=5,
                         )
                     if picks.empty:
-                        st.caption("No BUY screens today — open Screener.")
+                        st.caption("No BUY screens in scored set yet.")
                     else:
                         for _, row in picks.iterrows():
                             label = (
@@ -131,7 +158,7 @@ def render_sidebar():
                                 on_click=_jump_to, args=(row["Name"],),
                                 use_container_width=True,
                             )
-                        st.caption("Top picks · open Screener for full table")
+                        st.caption("Top picks from scored coverage so far")
 
         with st.expander("About", expanded=False):
             st.markdown(

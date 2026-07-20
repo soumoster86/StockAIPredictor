@@ -7,10 +7,14 @@ import streamlit as st
 from data import fetch_data, fetch_many, add_features, fetch_index
 from model import (
     train_model, walk_forward, multi_horizon_forecast,
-    compute_risk_score, find_support_resistance, compute_trade_plan,
-    quick_scan, quick_scan_global, buy_score,
     global_model_available, load_global_model,
     predict_with_global, multi_horizon_global,
+)
+from screener import (
+    SCAN_BATCH as _SCAN_BATCH,
+    normalize_stock_items, slice_scan_batch, merge_scan_frames,
+    score_batch, load_rankings, filter_rankings_to_watchlist,
+    DEFAULT_MAX_AGE_HOURS,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -23,15 +27,28 @@ STOCKS_FILE = (
     STOCKS_UNIVERSE_FILE if STOCKS_UNIVERSE_FILE.exists() else STOCKS_LIQUID_FILE
 )
 DEFAULT_STOCKS = {"Reliance Industries": "RELIANCE.NS", "Infosys": "INFY.NS"}
-# Hard cap for *screener* runs only (selectbox still loads the full list).
-# Full-universe scans in one go blow Yahoo/Cloud limits; raise carefully.
-SCAN_MAX = 80
+# One screener batch size. Full universe is walked with offset + merge
+# (Scan next batch) so Yahoo/Cloud limits stay manageable.
+SCAN_BATCH = _SCAN_BATCH
+# Back-compat alias used by older UI captions / tests
+SCAN_MAX = SCAN_BATCH
+
+# Session keys for multi-batch screener state
+SCAN_FP = "scan_fp"
+SCAN_DF = "scan_df"
+SCAN_FAILS = "scan_failures"
+SCAN_OFFSET = "scan_offset"
+SCAN_TOTAL = "scan_total"
+SCAN_ACTIVE = "scan_active"
+SCAN_SOURCE = "scan_source"  # "live" | "precomputed"
+SCAN_ASOF = "scan_asof"
 
 
 @st.cache_data(ttl=3600)
 def load_stock_list(file_or_path):
-    df = pd.read_csv(file_or_path)
-    df.columns = [c.strip().lower() for c in df.columns]
+    # utf-8-sig handles Excel/Windows BOM so "Name" is not "\ufeffName"
+    df = pd.read_csv(file_or_path, encoding="utf-8-sig")
+    df.columns = [str(c).replace("\ufeff", "").strip().lower() for c in df.columns]
     if not {"name", "symbol"}.issubset(df.columns):
         raise ValueError("CSV must have 'Name' and 'Symbol' columns.")
     df = df.dropna(subset=["name", "symbol"])
@@ -97,88 +114,196 @@ def run_walk_forward(symbol, model_type, calibrate):
     return walk_forward(data, model_type, calibrate=calibrate)
 
 
-def cap_scan_items(stock_items, limit=SCAN_MAX):
-    """Preserve order, drop duplicate symbols, hard-cap length for cloud safety."""
-    seen, out = set(), []
-    for name, sym in stock_items:
-        if sym in seen:
-            continue
-        seen.add(sym)
-        out.append((name, sym))
-        if len(out) >= limit:
-            break
-    return out
+def cap_scan_items(stock_items, limit=SCAN_BATCH):
+    """First `limit` unique symbols (legacy helper)."""
+    return normalize_stock_items(stock_items)[: max(int(limit), 0)]
 
 
-@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
-def run_scan(stock_items):
-    """Scan the watchlist (capped at SCAN_MAX).
+def watchlist_fingerprint(stocks: dict) -> tuple:
+    """Stable id so we reset scan state when the watchlist changes."""
+    return tuple(sorted((str(s).upper() for s in stocks.values())))
 
-    Prefers the pre-trained global model when artifacts exist — inference only,
-    no per-stock tree fit. Falls back to quick_scan otherwise.
+
+def reset_scan_session(stocks: dict) -> None:
+    """Clear accumulated screener state for this watchlist."""
+    items = normalize_stock_items(list(stocks.items()))
+    st.session_state[SCAN_FP] = watchlist_fingerprint(stocks)
+    st.session_state[SCAN_DF] = None
+    st.session_state[SCAN_FAILS] = []
+    st.session_state[SCAN_OFFSET] = 0
+    st.session_state[SCAN_TOTAL] = len(items)
+    st.session_state[SCAN_ACTIVE] = False
+    st.session_state[SCAN_SOURCE] = None
+    st.session_state[SCAN_ASOF] = None
+
+
+def ensure_scan_session(stocks: dict) -> None:
+    """Init or invalidate session when the stock list changes."""
+    fp = watchlist_fingerprint(stocks)
+    if st.session_state.get(SCAN_FP) != fp:
+        reset_scan_session(stocks)
+
+
+def scan_progress(stocks: dict) -> dict:
+    """Snapshot of multi-batch progress for the UI."""
+    ensure_scan_session(stocks)
+    total = int(st.session_state.get(SCAN_TOTAL) or 0)
+    offset = int(st.session_state.get(SCAN_OFFSET) or 0)
+    df = st.session_state.get(SCAN_DF)
+    n_ok = 0 if df is None or getattr(df, "empty", True) else len(df)
+    fails = st.session_state.get(SCAN_FAILS) or []
+    source = st.session_state.get(SCAN_SOURCE)
+    # Precomputed seeds mark offset == total so complete=True
+    complete = total > 0 and offset >= total
+    if source == "precomputed" and n_ok > 0:
+        complete = True
+        offset = max(offset, total)
+    return {
+        "total": total,
+        "offset": offset,
+        "attempted": offset if source != "precomputed" else total,
+        "succeeded": n_ok,
+        "failed": len(fails),
+        "remaining": 0 if source == "precomputed" else max(total - offset, 0),
+        "complete": complete,
+        "active": bool(st.session_state.get(SCAN_ACTIVE)),
+        "batch_size": SCAN_BATCH,
+        "source": source,
+        "asof": st.session_state.get(SCAN_ASOF),
+    }
+
+
+@st.cache_data(ttl=3600, max_entries=48, show_spinner="Scanning batch (download + score)...")
+def run_scan_batch(stock_items, offset=0, batch_size=SCAN_BATCH):
+    """Scan one batch starting at `offset`. Cached per (list, offset, size).
+
+    Returns (df, failures, next_offset, total, complete).
     """
-    stock_items = cap_scan_items(list(stock_items), SCAN_MAX)
-    rows, failures = [], []
-    seen = set()
-    batch = get_data_batch(tuple(sym for _, sym in stock_items))
-    global_bundle = load_global_model(1) if global_model_available() else None
-    mode = "global" if global_bundle is not None else "per-stock tree"
-    progress = st.progress(0.0, text=f"Scanning watchlist ({mode})...")
-    for i, (name, sym) in enumerate(stock_items):
-        progress.progress(
-            (i + 1) / max(len(stock_items), 1),
-            text=f"Scanning {sym} ({mode})...",
-        )
-        if sym in seen:
-            continue
-        seen.add(sym)
-        try:
-            raw = batch.get(sym, pd.DataFrame())
-            if raw.empty or len(raw) < 400:
-                failures.append((sym, "no/short data"))
-                continue
-            d = add_features(raw, index_close=get_index())
-            if global_bundle is not None:
-                scan = quick_scan_global(d, bundle=global_bundle)
-                if scan is None:
-                    scan = quick_scan(d)  # short history fallback
-            else:
-                scan = quick_scan(d)
-            if scan is None:
-                failures.append((sym, "too little history"))
-                continue
-            r = compute_risk_score(d)
-            s = find_support_resistance(d)
-            plan = compute_trade_plan(d, s.get("support"), s.get("resistance"))
-            price = float(d['Close'].iloc[-1])
-            prev = float(d['Close'].iloc[-2])
-            to_sup = (price / s['support'] - 1) if s.get('support') else None
-            to_res = (s['resistance'] / price - 1) if s.get('resistance') else None
-            rr = plan.get("reward_risk")
-            prob = scan['probability']
-            rows.append({
-                "Name": name, "Symbol": sym,
-                "Price": price, "Day": price / prev - 1,
-                "Screen": scan['signal'], "Probability Up": prob,
-                "Rating": scan['rating'],
-                "Test Acc": scan['accuracy'], "Baseline": scan['baseline'],
-                "Model": scan.get('model', ''),
-                "Risk": r['score'],
-                "Reward Risk": rr,
-                "To Support": to_sup,
-                "To Resistance": to_res,
-                "Buy Score": buy_score(
-                    prob, scan['accuracy'], scan['baseline'],
-                    r['score'], rr, to_sup,
-                ),
-            })
-        except Exception as e:
-            failures.append((sym, str(e)[:60]))
-    progress.empty()
+    batch, next_offset, total, complete = slice_scan_batch(
+        list(stock_items), offset=offset, batch_size=batch_size,
+    )
+    if not batch:
+        return pd.DataFrame(), [], next_offset, total, True
+
+    # Use cached fetch helpers from this module
+    price_map = get_data_batch(tuple(sym for _, sym in batch))
+    index_close = get_index()
+    bundle = load_global_model(1) if global_model_available() else None
+    rows, failures = score_batch(
+        batch, index_close=index_close, global_bundle=bundle, price_map=price_map,
+    )
     df = pd.DataFrame(rows)
     if not df.empty:
-        # Best long candidates first; non-BUY rows still listed by score
         df = df.sort_values(
             ["Buy Score", "Probability Up"], ascending=False,
         ).reset_index(drop=True)
+    return df, failures, next_offset, total, complete
+
+
+def run_scan(stock_items):
+    """Legacy: scan the first SCAN_BATCH names only (no session merge)."""
+    df, failures, _, _, _ = run_scan_batch(
+        tuple(stock_items), offset=0, batch_size=SCAN_BATCH,
+    )
     return df, failures
+
+
+def advance_scan_session(stocks: dict, n_batches: int = 1) -> dict:
+    """Run 1..n batches and merge into session. Returns progress dict."""
+    ensure_scan_session(stocks)
+    items = tuple(normalize_stock_items(list(stocks.items())))
+    n_batches = max(1, min(int(n_batches), 10))
+    st.session_state[SCAN_ACTIVE] = True
+    st.session_state[SCAN_SOURCE] = "live"
+    st.session_state[SCAN_ASOF] = None
+    st.session_state[SCAN_TOTAL] = len(items)
+
+    for _ in range(n_batches):
+        offset = int(st.session_state.get(SCAN_OFFSET) or 0)
+        if offset >= len(items):
+            break
+        df, fails, next_offset, total, complete = run_scan_batch(
+            items, offset=offset, batch_size=SCAN_BATCH,
+        )
+        st.session_state[SCAN_DF] = merge_scan_frames(
+            st.session_state.get(SCAN_DF), df,
+        )
+        prev_fails = st.session_state.get(SCAN_FAILS) or []
+        fail_map = {s: r for s, r in prev_fails}
+        for s, r in fails:
+            fail_map[s] = r
+        st.session_state[SCAN_FAILS] = list(fail_map.items())
+        st.session_state[SCAN_OFFSET] = next_offset
+        st.session_state[SCAN_TOTAL] = total
+        if complete:
+            break
+
+    return scan_progress(stocks)
+
+
+def get_scan_results():
+    """Accumulated scan DataFrame (may be empty)."""
+    df = st.session_state.get(SCAN_DF)
+    if df is None:
+        return pd.DataFrame()
+    return df
+
+
+@st.cache_data(ttl=600, max_entries=2, show_spinner=False)
+def _cached_precomputed(max_age_hours=DEFAULT_MAX_AGE_HOURS):
+    return load_rankings(max_age_hours=max_age_hours)
+
+
+def precomputed_status(stocks: dict, max_age_hours=DEFAULT_MAX_AGE_HOURS):
+    """Info about offline rankings file for the UI."""
+    df, meta = _cached_precomputed(max_age_hours=max_age_hours)
+    if meta is None and (df is None or df.empty):
+        return {"available": False, "df": pd.DataFrame(), "meta": None}
+    filtered = filter_rankings_to_watchlist(df, stocks)
+    return {
+        "available": not filtered.empty,
+        "df": filtered,
+        "meta": meta,
+        "n_file": 0 if df is None else len(df),
+        "n_watchlist": len(filtered),
+        "stale": bool((meta or {}).get("stale")),
+        "asof": (meta or {}).get("generated_at"),
+        "age_hours": (meta or {}).get("age_hours"),
+        "engine": (meta or {}).get("engine"),
+    }
+
+
+def seed_session_from_precomputed(stocks: dict, allow_stale: bool = True) -> bool:
+    """Load offline rankings into session. Returns True if seeded."""
+    ensure_scan_session(stocks)
+    # Allow stale for manual "Load precomputed" — auto-seed skips stale
+    max_age = None if allow_stale else DEFAULT_MAX_AGE_HOURS
+    df, meta = load_rankings(max_age_hours=max_age)
+    if meta and meta.get("stale") and not allow_stale:
+        return False
+    filtered = filter_rankings_to_watchlist(df, stocks)
+    if filtered.empty:
+        return False
+
+    items = normalize_stock_items(list(stocks.items()))
+    st.session_state[SCAN_DF] = filtered
+    st.session_state[SCAN_FAILS] = []
+    st.session_state[SCAN_TOTAL] = len(items)
+    st.session_state[SCAN_OFFSET] = len(items)  # treat as fully covered
+    st.session_state[SCAN_ACTIVE] = True
+    st.session_state[SCAN_SOURCE] = "precomputed"
+    st.session_state[SCAN_ASOF] = (meta or {}).get("generated_at")
+    st.session_state[SCAN_FP] = watchlist_fingerprint(stocks)
+    return True
+
+
+def maybe_autoseed_precomputed(stocks: dict) -> bool:
+    """If session empty, seed from fresh precomputed file once."""
+    ensure_scan_session(stocks)
+    if st.session_state.get(SCAN_ACTIVE) or int(st.session_state.get(SCAN_OFFSET) or 0) > 0:
+        return False
+    df = st.session_state.get(SCAN_DF)
+    if df is not None and not getattr(df, "empty", True):
+        return False
+    return seed_session_from_precomputed(stocks, allow_stale=False)
+

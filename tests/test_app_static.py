@@ -107,13 +107,13 @@ def test_no_duplicate_static_widget_keys():
     assert not dups, f"duplicate widget keys: {dups}"
 
 
-def test_scan_max_constant_is_sane():
-    """Cloud-safety cap must exist and stay well below full-universe size."""
-    src = (UI_DIR / "services.py").read_text(encoding="utf-8")
-    m = re.search(r"^SCAN_MAX\s*=\s*(\d+)", src, re.M)
-    assert m, "SCAN_MAX missing from ui/services.py"
-    cap = int(m.group(1))
-    assert 20 <= cap <= 150, f"SCAN_MAX={cap} outside expected band"
+def test_scan_batch_constant_is_sane():
+    """Batch size must exist and stay well below full-universe size."""
+    from ui.services import SCAN_BATCH, SCAN_MAX
+    from screener import SCAN_BATCH as CORE_BATCH
+    assert SCAN_BATCH == CORE_BATCH
+    assert 20 <= SCAN_BATCH <= 150, f"SCAN_BATCH={SCAN_BATCH} outside expected band"
+    assert SCAN_MAX == SCAN_BATCH
 
 
 def test_app_loads_full_universe_when_present():

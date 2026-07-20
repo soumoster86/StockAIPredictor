@@ -57,9 +57,27 @@ Click Deploy. The first build takes several minutes (torch). Then check:
 
 ## Known limitations on Community Cloud
 
-- **Journal is ephemeral**: container restarts/redeploys WIPE journal.csv.
-  Download it regularly (button in the Journal tab). For permanence, move
-  storage to Google Sheets or Supabase later.
+- **Journal storage**:
+  - Default is **local CSV** under `journals/` — wiped on Cloud restart.
+  - For permanence, enable **Supabase** (see below). Download CSV from the
+    Journal tab as a backup either way.
+
+### Optional: Supabase journal (survives redeploys)
+
+1. Create a free project at https://supabase.com
+2. SQL Editor → run `scripts/supabase_journal.sql`
+3. Project Settings → API → copy **Project URL** and **service_role** key
+4. Streamlit Cloud → App settings → Secrets:
+
+```toml
+[journal]
+backend = "supabase"
+supabase_url = "https://YOUR_PROJECT.supabase.co"
+supabase_key = "YOUR_SERVICE_ROLE_KEY"
+table = "signal_journal"
+```
+
+5. Redeploy. The Journal tab should show **Supabase (cloud-persistent)**.
 - **Resource limits (~1 GB)**: avoid opening many stocks × model types in
   one session; the app caps its model cache, but heavy use can still hit
   "over its resource limits" → reboot the app from the cloud dashboard.
