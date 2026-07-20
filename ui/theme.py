@@ -65,12 +65,24 @@ def inject_global_css():
     border: 1px solid {BORDER};
     border-radius: 12px;
     padding: 0.75rem 0.9rem;
+    overflow: visible !important;
+    min-width: 0;
   }}
   [data-testid="stMetricLabel"] {{
     color: {TEXT_MUTED} !important;
-    font-size: 0.78rem !important;
+    font-size: 0.72rem !important;
     text-transform: uppercase;
     letter-spacing: 0.04em;
+    white-space: nowrap !important;
+  }}
+  [data-testid="stMetricValue"] {{
+    overflow: visible !important;
+    white-space: nowrap !important;
+    font-size: 1.35rem !important;
+    line-height: 1.25 !important;
+  }}
+  [data-testid="stMetricDelta"] {{
+    overflow: visible !important;
   }}
   /* ---- Section radio (horizontal) as clear separate pills ---- */
   div[role="radiogroup"] {{
@@ -281,5 +293,73 @@ def card_html(title: str, lines: list[str], accent: str = ACCENT) -> str:
             border-left:3px solid {accent};">
   <div style="font-size:0.95rem;font-weight:700;color:{TEXT};">{t}</div>
   {body}
+</div>
+"""
+
+
+def pick_card_html(
+    rank: int,
+    symbol: str,
+    name: str,
+    prob_pct: float,
+    score: float,
+    price_s: str,
+    day_s: str,
+    risk_s: str,
+    rr_s: str,
+) -> str:
+    """Rich top-pick card for the screener shortlist (inline styles only)."""
+    sym = html_lib.escape(str(symbol))
+    nm = html_lib.escape(str(name))
+    # Soft score color ramp
+    if score >= 70:
+        score_bg, score_fg = "rgba(54,179,126,0.22)", ACCENT
+    elif score >= 55:
+        score_bg, score_fg = "rgba(230,180,80,0.20)", AMBER
+    else:
+        score_bg, score_fg = "rgba(108,182,255,0.16)", BLUE
+
+    def cell(label: str, value: str) -> str:
+        return (
+            f'<div style="background:rgba(255,255,255,0.03);border:1px solid {BORDER};'
+            f'border-radius:10px;padding:0.45rem 0.5rem;">'
+            f'<div style="font-size:0.65rem;letter-spacing:0.06em;text-transform:uppercase;'
+            f'color:{TEXT_DIM};">{html_lib.escape(label)}</div>'
+            f'<div style="font-size:0.95rem;font-weight:700;color:{TEXT};margin-top:0.15rem;'
+            f'font-variant-numeric:tabular-nums;">{html_lib.escape(value)}</div>'
+            f"</div>"
+        )
+
+    return f"""
+<div style="border-radius:16px;padding:1rem 1.05rem 0.95rem 1.05rem;margin-bottom:0.65rem;
+            background:linear-gradient(160deg,{BG_CARD} 0%,{BG_SOFT} 100%);
+            border:1px solid {BORDER};
+            box-shadow:0 6px 18px rgba(0,0,0,0.22);">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;
+              margin-bottom:0.55rem;">
+    <span style="display:inline-flex;align-items:center;justify-content:center;
+                 min-width:2rem;height:2rem;border-radius:999px;font-weight:800;
+                 font-size:0.85rem;background:{ACCENT_SOFT};color:{ACCENT};
+                 border:1px solid rgba(54,179,126,0.35);">#{int(rank)}</span>
+    <span style="display:inline-flex;align-items:center;gap:0.35rem;
+                 padding:0.28rem 0.7rem;border-radius:999px;font-size:0.78rem;
+                 font-weight:700;background:rgba(54,179,126,0.16);color:{ACCENT};
+                 border:1px solid rgba(54,179,126,0.35);">BUY · {prob_pct:.0f}%</span>
+    <span style="display:inline-flex;align-items:center;padding:0.28rem 0.65rem;
+                 border-radius:999px;font-size:0.78rem;font-weight:800;
+                 background:{score_bg};color:{score_fg};
+                 border:1px solid rgba(255,255,255,0.08);
+                 font-variant-numeric:tabular-nums;">Score {score:.0f}</span>
+  </div>
+  <div style="font-size:1.15rem;font-weight:800;color:{TEXT};letter-spacing:-0.02em;
+              line-height:1.2;">{sym}</div>
+  <div style="font-size:0.82rem;color:{TEXT_MUTED};margin-top:0.2rem;
+              white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{nm}</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.4rem;margin-top:0.75rem;">
+    {cell("Price", price_s)}
+    {cell("Day", day_s)}
+    {cell("Risk", f"{risk_s}/10")}
+    {cell("R:R", rr_s)}
+  </div>
 </div>
 """

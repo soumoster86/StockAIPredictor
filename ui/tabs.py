@@ -25,7 +25,7 @@ from ui.services import (
 )
 from ui.theme import (
     section_header, plotly_layout, ACCENT, RED, AMBER, BLUE, TEXT_MUTED,
-    card_html,
+    card_html, pick_card_html,
 )
 
 
@@ -261,7 +261,7 @@ def render_prediction_tab(ctx):
 
 
 def _render_buy_pick_card(rank, row, key_prefix, on_jump):
-    """One top-pick card with jump-to-stock button (inline styles + natives)."""
+    """One top-pick card with jump-to-stock button (rich inline card)."""
     name = row["Name"]
     sym = row["Symbol"]
     prob = float(row["Probability Up"]) * 100
@@ -277,20 +277,24 @@ def _render_buy_pick_card(rank, row, key_prefix, on_jump):
     price_s = f"{float(price):,.2f}" if price is not None and pd.notna(price) else "—"
 
     st.markdown(
-        card_html(
-            f"#{int(rank)}  {sym}  ·  BUY {prob:.0f}%  ·  score {score:.0f}",
-            [
-                str(name),
-                f"Price {price_s}  ·  Day {day_s}  ·  Risk {risk_s}/10  ·  R:R {rr_s}",
-            ],
-            accent=ACCENT,
+        pick_card_html(
+            rank=int(rank),
+            symbol=str(sym),
+            name=str(name),
+            prob_pct=prob,
+            score=score,
+            price_s=price_s,
+            day_s=day_s,
+            risk_s=risk_s,
+            rr_s=rr_s,
         ),
         unsafe_allow_html=True,
     )
     st.button(
-        f"Open full analysis · {sym}",
+        f"Open analysis · {sym}",
         key=f"{key_prefix}_{rank}_{sym}",
         use_container_width=True,
+        type="secondary",
         on_click=on_jump,
         args=(name,),
     )
@@ -475,21 +479,32 @@ def render_scanner_tab(ctx):
 
     n_buy = int((scan_df["Screen"] == "BUY").sum())
     n_sell = int((scan_df["Screen"] == "SELL").sum())
+    top_score = float(scan_df["Buy Score"].max()) if "Buy Score" in scan_df else 0
+
+    # Short labels so values never clip in narrow metric cards
     sc1, sc2, sc3, sc4, sc5 = st.columns(5)
     if prog.get("source") == "precomputed":
-        sc1.metric("Source", "Precomputed")
+        sc1.metric(
+            "Source",
+            "Offline",
+            help="Precomputed rankings file (not a live Yahoo walk).",
+        )
     else:
-        sc1.metric("Coverage", f"{prog['attempted']}/{prog['total']}")
-    sc2.metric("Scored", f"{len(scan_df)}")
-    sc3.metric("BUY screens", n_buy)
-    sc4.metric("SELL screens", n_sell)
-    top_score = float(scan_df["Buy Score"].max()) if "Buy Score" in scan_df else 0
-    sc5.metric("Top buy score", f"{top_score:.0f}")
+        sc1.metric(
+            "Coverage",
+            f"{prog['attempted']}/{prog['total']}",
+            help="Symbols attempted vs full watchlist size.",
+        )
+    sc2.metric("Scored", f"{len(scan_df):,}")
+    sc3.metric("BUY", f"{n_buy:,}", help="Screen calls = BUY")
+    sc4.metric("SELL", f"{n_sell:,}", help="Screen calls = SELL")
+    sc5.metric("Top score", f"{top_score:.0f}", help="Highest Buy Score in results")
 
     if prog.get("source") == "precomputed":
+        asof = prog.get("asof") or "—"
         st.success(
-            f"Precomputed ranking · **{len(scan_df)}** names · "
-            f"as of **{prog.get('asof') or '—'}**."
+            f"**Source: Precomputed (offline)** · **{len(scan_df):,}** names · "
+            f"as of **{asof}**."
         )
     elif prog["complete"]:
         st.success(
