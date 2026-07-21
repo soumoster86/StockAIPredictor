@@ -2,14 +2,19 @@
 import numpy as np
 import pandas as pd
 
+from data import FEATURES, add_features
 from model import (
-    build_positions, performance_stats, tune_thresholds, rating_from_prob,
-    compute_risk_score, calibration_metrics, find_support_resistance,
-    compute_trade_plan, position_size, predict,
+    build_positions,
+    calibration_metrics,
+    compute_risk_score,
+    compute_trade_plan,
+    find_support_resistance,
+    performance_stats,
+    position_size,
+    predict,
+    rating_from_prob,
+    tune_thresholds,
 )
-from data import add_features
-from data import FEATURES
-from test_data import synth_ohlcv
 
 
 def test_build_positions_hysteresis():
@@ -202,8 +207,8 @@ def test_buy_score_orders_strong_over_weak():
 
 def test_quick_scan_global_uses_frozen_weights():
     """Scanner global path must not train a new tree; returns source=global."""
-    from model import train_global_predictor, quick_scan_global
     from data import FEATURES
+    from model import quick_scan_global, train_global_predictor
 
     frames = {
         "AAA.NS": _mini_stock_frame(20, 500),
@@ -222,8 +227,8 @@ def test_quick_scan_global_uses_frozen_weights():
 
 
 def test_predict_with_global_sets_honest_oos_note():
-    from model import train_global_predictor, predict_with_global
     from data import FEATURES
+    from model import predict_with_global, train_global_predictor
 
     frames = {
         "AAA.NS": _mini_stock_frame(10, 500),

@@ -1,7 +1,9 @@
 # =============================
 # model.py
 # =============================
+import logging
 import os
+
 import numpy as np
 import pandas as pd
 import torch
@@ -17,6 +19,8 @@ except ImportError:
     HAS_XGB = False
 
 from data import FEATURES, HORIZONS
+
+logger = logging.getLogger(__name__)
 
 SEED = 42
 TRANSACTION_COST = 0.001
@@ -482,6 +486,11 @@ def train_model(data, model_type="Neural Network", calibrate=False):
     # The evaluation model above intentionally stops at the training slice so
     # validation/test metrics remain honest. For the live signal, refit on all
     # rows with known targets so today's prediction uses the latest history.
+    #
+    # NOTE: this is a deliberate ~2x training cost — the ensemble is trained
+    # once for honest metrics and once more here for the deployed signal. It is
+    # acceptable because get_trained() in ui/services.py caches the whole call
+    # (per symbol/model), so the double fit happens at most once per hour.
     live_scaler = StandardScaler().fit(X)
     live_Xs = live_scaler.transform(X)
     live_predictor = make_predictor(model_type).fit(live_Xs, y, n)
@@ -749,8 +758,8 @@ def find_support_resistance(data, lookback=252, swing_window=10, cluster_pct=0.0
     resistance_levels = cluster(swing_highs)
 
     return {
-        'support': max((l for l in support_levels if l < price), default=None),
-        'resistance': min((l for l in resistance_levels if l > price), default=None),
+        'support': max((lv for lv in support_levels if lv < price), default=None),
+        'resistance': min((lv for lv in resistance_levels if lv > price), default=None),
         'support_levels': support_levels,
         'resistance_levels': resistance_levels,
         'price': price,
@@ -1050,7 +1059,7 @@ def pool_training_data(per_stock_frames, target_col):
     day_ids (int days since epoch) enable time-based train/test splits so
     the global model is not evaluated on randomly shuffled future rows."""
     X_parts, y_parts, d_parts, used = [], [], [], 0
-    for sym, d in per_stock_frames.items():
+    for _sym, d in per_stock_frames.items():
         if d is None or d.empty or target_col not in d.columns:
             continue
         sub = d[d[target_col].notna()]
@@ -1147,6 +1156,7 @@ def train_global_predictor(per_stock_frames, target_col, model_type="Ensemble",
 
 def save_global_model(predictor, scaler, horizon, directory=GLOBAL_MODEL_DIR):
     import os
+
     import joblib
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, f"global_h{horizon}.joblib")
@@ -1157,6 +1167,7 @@ def save_global_model(predictor, scaler, horizon, directory=GLOBAL_MODEL_DIR):
 
 def load_global_model(horizon, directory=GLOBAL_MODEL_DIR):
     import os
+
     import joblib
     path = os.path.join(directory, f"global_h{horizon}.joblib")
     if not os.path.exists(path):
@@ -1164,8 +1175,14 @@ def load_global_model(horizon, directory=GLOBAL_MODEL_DIR):
     try:
         bundle = joblib.load(path)
     except Exception:
+        # A corrupted/unreadable artifact should be distinguishable from a
+        # missing one — otherwise it silently falls back to the per-stock path.
+        logger.warning("Failed to load global model %s", path, exc_info=True)
         return None
     if list(bundle.get("features", [])) != list(FEATURES):
+        logger.warning(
+            "Global model %s has a mismatched feature set; ignoring it.", path
+        )
         return None
     return bundle
 

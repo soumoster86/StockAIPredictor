@@ -1,5 +1,5 @@
 """Auth: hashing round trips, salting, fail-closed behavior."""
-from auth import hash_password, verify_password, check_credentials
+from auth import check_credentials, hash_password, verify_password
 
 
 def test_round_trip_and_rejections():

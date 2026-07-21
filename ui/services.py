@@ -4,17 +4,27 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from data import fetch_data, fetch_many, add_features, fetch_index
+from data import add_features, fetch_data, fetch_index, fetch_many
 from model import (
-    train_model, walk_forward, multi_horizon_forecast,
-    global_model_available, load_global_model,
-    predict_with_global, multi_horizon_global,
+    global_model_available,
+    load_global_model,
+    multi_horizon_forecast,
+    multi_horizon_global,
+    predict_with_global,
+    train_model,
+    walk_forward,
+)
+from screener import (
+    DEFAULT_MAX_AGE_HOURS,
+    filter_rankings_to_watchlist,
+    load_rankings,
+    merge_scan_frames,
+    normalize_stock_items,
+    score_batch,
+    slice_scan_batch,
 )
 from screener import (
     SCAN_BATCH as _SCAN_BATCH,
-    normalize_stock_items, slice_scan_batch, merge_scan_frames,
-    score_batch, load_rankings, filter_rankings_to_watchlist,
-    DEFAULT_MAX_AGE_HOURS,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -55,7 +65,7 @@ def load_stock_list(file_or_path):
     df["name"] = df["name"].astype(str).str.strip()
     df["symbol"] = df["symbol"].astype(str).str.strip().str.upper()
     df = df.drop_duplicates(subset=["symbol"]).drop_duplicates(subset=["name"])
-    return dict(zip(df["name"], df["symbol"]))
+    return dict(zip(df["name"], df["symbol"], strict=False))
 
 
 @st.cache_data(ttl=3600, max_entries=20, show_spinner="Downloading price data...")
@@ -121,7 +131,7 @@ def cap_scan_items(stock_items, limit=SCAN_BATCH):
 
 def watchlist_fingerprint(stocks: dict) -> tuple:
     """Stable id so we reset scan state when the watchlist changes."""
-    return tuple(sorted((str(s).upper() for s in stocks.values())))
+    return tuple(sorted(str(s).upper() for s in stocks.values()))
 
 
 def reset_scan_session(stocks: dict) -> None:
@@ -229,7 +239,7 @@ def advance_scan_session(stocks: dict, n_batches: int = 1) -> dict:
             st.session_state.get(SCAN_DF), df,
         )
         prev_fails = st.session_state.get(SCAN_FAILS) or []
-        fail_map = {s: r for s, r in prev_fails}
+        fail_map = dict(prev_fails)
         for s, r in fails:
             fail_map[s] = r
         st.session_state[SCAN_FAILS] = list(fail_map.items())

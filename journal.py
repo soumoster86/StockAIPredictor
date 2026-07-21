@@ -17,13 +17,13 @@ Public API is unchanged for tests and the UI:
 
 from __future__ import annotations
 
-from pathlib import Path
 import json
 import os
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import numpy as np
 import pandas as pd

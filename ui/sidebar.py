@@ -1,17 +1,25 @@
 """Sidebar: settings, stock picker, global toggle, mini screener."""
 import streamlit as st
 
-from model import MODEL_TYPES, HAS_XGB, global_model_available
+from model import HAS_XGB, MODEL_TYPES, global_model_available
 from ui.help_text import HELP
 from ui.services import (
-    STOCKS_FILE, STOCKS_UNIVERSE_FILE, DEFAULT_STOCKS, SCAN_MAX, SCAN_BATCH,
-    load_stock_list, ensure_scan_session, advance_scan_session,
-    scan_progress, get_scan_results, reset_scan_session,
-    maybe_autoseed_precomputed, seed_session_from_precomputed,
+    DEFAULT_STOCKS,
+    SCAN_BATCH,
+    STOCKS_FILE,
+    STOCKS_UNIVERSE_FILE,
+    advance_scan_session,
+    ensure_scan_session,
+    get_scan_results,
+    load_stock_list,
+    maybe_autoseed_precomputed,
     precomputed_status,
+    reset_scan_session,
+    scan_progress,
+    seed_session_from_precomputed,
 )
-from ui.theme import brand_strip
 from ui.stock_picker import render_sidebar_stock_picker, resolve_selection
+from ui.theme import brand_strip
 
 
 def render_sidebar():
