@@ -23,7 +23,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from screener import (  # noqa: E402
-    SCAN_BATCH, RANKINGS_DIR, scan_universe, save_rankings,
+    RANKINGS_DIR,
+    SCAN_BATCH,
+    save_rankings,
+    scan_universe,
 )
 
 

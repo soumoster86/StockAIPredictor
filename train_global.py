@@ -33,8 +33,10 @@ import time
 
 from data import HORIZONS, add_features, fetch_index, fetch_many
 from model import (
-    GLOBAL_MODEL_DIR, GLOBAL_META_FILE,
-    train_global_predictor, save_global_model,
+    GLOBAL_META_FILE,
+    GLOBAL_MODEL_DIR,
+    save_global_model,
+    train_global_predictor,
 )
 
 

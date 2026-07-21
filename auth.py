@@ -68,13 +68,14 @@ def require_login():
     """Call once at the top of app.py (after set_page_config). Renders the
     login page and halts the script until authenticated; afterwards returns
     the username."""
-    import streamlit as st
     import base64
     from pathlib import Path
 
+    import streamlit as st
+
     # Theme CSS on login too (before authenticated shell).
     try:
-        from ui.theme import inject_global_css, footer_bar
+        from ui.theme import footer_bar, inject_global_css
         inject_global_css()
     except Exception:
         footer_bar = None

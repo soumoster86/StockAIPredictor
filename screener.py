@@ -10,16 +10,21 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 
 from data import add_features, fetch_index, fetch_many
 from model import (
-    buy_score, compute_risk_score, compute_trade_plan,
-    find_support_resistance, global_model_available, load_global_model,
-    quick_scan, quick_scan_global,
+    buy_score,
+    compute_risk_score,
+    compute_trade_plan,
+    find_support_resistance,
+    global_model_available,
+    load_global_model,
+    quick_scan,
+    quick_scan_global,
 )
 
 SCAN_BATCH = 80
@@ -179,7 +184,7 @@ def scan_universe(stock_items, batch_size=SCAN_BATCH, max_symbols=None,
         ).reset_index(drop=True)
 
     meta = {
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "n_requested": total,
         "n_scored": int(len(df)),
         "n_failed": len(fail_map),
@@ -236,8 +241,8 @@ def load_rankings(directory=None, max_age_hours=DEFAULT_MAX_AGE_HOURS):
         try:
             gen = datetime.strptime(
                 meta["generated_at"], "%Y-%m-%dT%H:%M:%SZ",
-            ).replace(tzinfo=timezone.utc)
-            age_h = (datetime.now(timezone.utc) - gen).total_seconds() / 3600.0
+            ).replace(tzinfo=UTC)
+            age_h = (datetime.now(UTC) - gen).total_seconds() / 3600.0
             if age_h > float(max_age_hours):
                 meta["stale"] = True
                 meta["age_hours"] = round(age_h, 1)

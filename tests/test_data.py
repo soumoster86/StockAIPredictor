@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 
-from data import add_features, FEATURES, HORIZONS
+from data import FEATURES, HORIZONS, add_features
 
 
 def synth_ohlcv(n=900, seed=7, drift=0.0004, vol=0.014):

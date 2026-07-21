@@ -7,9 +7,8 @@ import pathlib
 import py_compile
 import re
 
-import pytest
-
 import conftest
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 APP = ROOT / "app.py"
@@ -109,8 +108,8 @@ def test_no_duplicate_static_widget_keys():
 
 def test_scan_batch_constant_is_sane():
     """Batch size must exist and stay well below full-universe size."""
-    from ui.services import SCAN_BATCH, SCAN_MAX
     from screener import SCAN_BATCH as CORE_BATCH
+    from ui.services import SCAN_BATCH, SCAN_MAX
     assert SCAN_BATCH == CORE_BATCH
     assert 20 <= SCAN_BATCH <= 150, f"SCAN_BATCH={SCAN_BATCH} outside expected band"
     assert SCAN_MAX == SCAN_BATCH

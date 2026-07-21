@@ -1,11 +1,18 @@
 """Journal: dedupe, every resolution path, scorecard math, failure safety."""
-import numpy as np
 import pandas as pd
 
 from journal import (
-    append_signal, load_journal, resolve_entry, resolve_journal, scorecard,
-    journal_path_for, safe_username, get_journal_config, journal_backend_info,
-    LocalCSVBackend, SupabaseBackend,
+    LocalCSVBackend,
+    SupabaseBackend,
+    append_signal,
+    get_journal_config,
+    journal_backend_info,
+    journal_path_for,
+    load_journal,
+    resolve_entry,
+    resolve_journal,
+    safe_username,
+    scorecard,
 )
 
 REC = dict(signal_date="2026-05-01", symbol="TEST.NS", name="Test",

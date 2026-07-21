@@ -3,7 +3,7 @@ import html as html_lib
 
 import pandas as pd
 
-from ui.theme import ACCENT, RED, AMBER, BLUE, TEXT, TEXT_MUTED
+from ui.theme import ACCENT, AMBER, BLUE, RED, TEXT, TEXT_MUTED
 
 # Public aliases used across the app
 GREEN = ACCENT

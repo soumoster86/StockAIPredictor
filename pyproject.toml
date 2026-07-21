@@ -1,0 +1,31 @@
+# =============================
+# pyproject.toml — tooling config (ruff)
+# =============================
+# This project is not packaged/installed; this file only configures dev tools.
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["global_models", "rankings"]
+
+[tool.ruff.lint]
+# A conservative, high-signal rule set:
+#   E/W  pycodestyle   F  pyflakes   I  isort
+#   UP   pyupgrade     B  flake8-bugbear   C4 comprehensions
+select = ["E", "W", "F", "I", "UP", "B", "C4"]
+ignore = [
+    "E501",  # line length is enforced by the formatter, not the linter
+    "B008",  # function calls in argument defaults (common in this code's helpers)
+    "C408",  # dict() calls — idiomatic in the plotly layout code (ui/theme.py)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# conftest bootstraps sys.path before importing project modules, so the
+# imports intentionally sit below that setup code.
+"tests/conftest.py" = ["E402"]
+
+[tool.ruff.format]
+# Config for `ruff format` when run manually. CI only runs `ruff check`
+# (the lint gate); the auto-formatter is opt-in so it never reflows the
+# whole codebase unexpectedly.
+quote-style = "preserve"

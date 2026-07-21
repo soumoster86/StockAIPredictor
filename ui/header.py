@@ -4,9 +4,11 @@ import streamlit as st
 
 from data import FEATURES
 from ui.help_text import HELP
-from ui.styles import GREEN, RED
+from ui.styles import RED
 from ui.theme import (
-    plotly_layout, ACCENT, signal_banner_html, TEXT_MUTED,
+    ACCENT,
+    plotly_layout,
+    signal_banner_html,
 )
 
 

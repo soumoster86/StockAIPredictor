@@ -12,19 +12,26 @@ import streamlit as st
 
 from auth import require_login
 from model import (
-    predict, compute_risk_score, find_support_resistance, compute_trade_plan,
+    compute_risk_score,
+    compute_trade_plan,
+    find_support_resistance,
     global_model_available,
+    predict,
 )
-from ui.theme import inject_global_css, page_hero, footer_bar
-from ui.sidebar import render_sidebar
 from ui.header import render_header
+from ui.services import get_data, get_trained
+from ui.sidebar import render_sidebar
 from ui.stock_picker import render_main_stock_picker
 from ui.tabs import (
-    render_prediction_tab, render_scanner_tab, render_plan_tab,
-    render_backtest_tab, render_walkforward_tab, render_journal_tab,
+    render_backtest_tab,
     render_charts_tab,
+    render_journal_tab,
+    render_plan_tab,
+    render_prediction_tab,
+    render_scanner_tab,
+    render_walkforward_tab,
 )
-from ui.services import get_data, get_trained
+from ui.theme import footer_bar, inject_global_css, page_hero
 
 st.set_page_config(
     page_title="AI Stock Trend Predictor",

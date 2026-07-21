@@ -4,28 +4,56 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from model import (
-    backtest, explain_prediction, rating_from_prob, position_size,
-    random_signal_benchmark, global_model_available, rank_buy_candidates,
-)
 from journal import (
-    load_journal, append_signal, resolve_journal, scorecard,
-    journal_path_for, journal_backend_info, MAX_HOLD_DAYS,
+    MAX_HOLD_DAYS,
+    append_signal,
+    journal_backend_info,
+    journal_path_for,
+    load_journal,
+    resolve_journal,
+    scorecard,
+)
+from model import (
+    backtest,
+    explain_prediction,
+    global_model_available,
+    position_size,
+    random_signal_benchmark,
+    rank_buy_candidates,
+    rating_from_prob,
 )
 from ui.help_text import HELP
-from ui.styles import (
-    style_map, color_signal, color_status, color_pos_neg, describe_feature,
-    factor_row_html,
-)
 from ui.services import (
-    SCAN_BATCH, SCAN_MAX, get_data, get_index, get_horizons, run_walk_forward,
-    ensure_scan_session, reset_scan_session, advance_scan_session,
-    scan_progress, get_scan_results, precomputed_status,
-    seed_session_from_precomputed, maybe_autoseed_precomputed,
+    SCAN_BATCH,
+    advance_scan_session,
+    ensure_scan_session,
+    get_data,
+    get_horizons,
+    get_index,
+    get_scan_results,
+    maybe_autoseed_precomputed,
+    precomputed_status,
+    reset_scan_session,
+    run_walk_forward,
+    scan_progress,
+    seed_session_from_precomputed,
+)
+from ui.styles import (
+    color_pos_neg,
+    color_signal,
+    color_status,
+    describe_feature,
+    style_map,
 )
 from ui.theme import (
-    section_header, plotly_layout, ACCENT, RED, AMBER, BLUE, TEXT_MUTED,
-    card_html, pick_card_html,
+    ACCENT,
+    AMBER,
+    BLUE,
+    RED,
+    TEXT_MUTED,
+    pick_card_html,
+    plotly_layout,
+    section_header,
 )
 
 

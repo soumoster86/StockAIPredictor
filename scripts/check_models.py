@@ -14,8 +14,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from model import (  # noqa: E402
-    GLOBAL_MODEL_DIR, GLOBAL_META_FILE, HORIZONS,
-    load_global_model, global_model_available, FEATURES,
+    FEATURES,
+    GLOBAL_META_FILE,
+    GLOBAL_MODEL_DIR,
+    global_model_available,
+    load_global_model,
 )
 
 
