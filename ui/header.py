@@ -22,23 +22,18 @@ def render_header(display_name, symbol, data, predictor, scaler, thresholds,
     st.markdown(f"#### {display_name}  ·  `{symbol}`")
 
     if signal == "BUY":
-        title = f"▲  BUY  ·  {confidence * 100:.1f}% confidence"
+        title = f"BUY  ·  {confidence * 100:.1f}% confidence"
         body = "Model favors a long entry at the latest close."
-        # Native Streamlit status for accessibility + color
-        st.success(f"**BUY** — model confidence {confidence * 100:.1f}%")
     elif signal == "SELL":
-        title = f"▼  SELL / cash  ·  {(1 - confidence) * 100:.1f}% cash bias"
+        title = f"SELL / cash  ·  {(1 - confidence) * 100:.1f}% cash bias"
         body = "Exit longs or stay in cash — not a short recommendation."
-        st.error(
-            f"**SELL / move to cash** — model confidence "
-            f"{(1 - confidence) * 100:.1f}%"
-        )
     else:
-        title = f"◆  HOLD  ·  {confidence * 100:.1f}% conviction"
+        title = f"HOLD  ·  {confidence * 100:.1f}% conviction"
         body = "Conviction is mixed; no fresh long entry suggested."
-        st.warning(f"**HOLD** — model is uncertain ({confidence * 100:.1f}%)")
 
-    # Colored banner with INLINE styles (works even if global CSS fails)
+    # Single colored banner with INLINE styles (works even if global CSS fails).
+    # The banner's icon bubble + color carry the signal; a duplicate native
+    # st.success/error/warning line above it was visual noise.
     st.markdown(
         signal_banner_html(signal, title, body),
         unsafe_allow_html=True,

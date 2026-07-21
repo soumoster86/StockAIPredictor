@@ -47,6 +47,25 @@ def inject_global_css():
     # Prefer st.html (Streamlit ≥1.33) so CSS isn't sandboxed as markdown text
     css = f"""
 <style>
+  /* ---- Typography: Inter with tabular numerals for the finance look.
+     Falls back to system fonts when offline. ---- */
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+  html, body, [class*="css"], .stApp, .stMarkdown, button, input, textarea {{
+    font-family: 'Inter', 'Segoe UI', system-ui, sans-serif !important;
+  }}
+  h1, h2, h3, h4 {{ letter-spacing: -0.02em !important; }}
+  ::selection {{ background: rgba(54,179,126,0.35); }}
+
+  /* ---- App canvas: near-black with a faint accent glow up top ---- */
+  .stApp {{
+    background:
+      radial-gradient(1100px 480px at 12% -8%, rgba(54,179,126,0.07), transparent 60%),
+      radial-gradient(900px 420px at 92% -12%, rgba(108,182,255,0.05), transparent 55%),
+      {BG};
+  }}
+  [data-testid="stHeader"] {{ background: transparent !important; }}
+  [data-testid="stAppDeployButton"], .stDeployButton {{ display: none !important; }}
+
   /* Keep enough top padding so content clears Streamlit's fixed toolbar
      (too-small padding clips the first heading — see login hero). */
   .block-container {{
@@ -60,6 +79,14 @@ def inject_global_css():
     overflow: visible !important;
   }}
   [data-testid="stVerticalBlock"] {{ overflow: visible !important; }}
+
+  /* ---- Sidebar: slightly darker column with a hairline edge ---- */
+  [data-testid="stSidebar"] {{
+    background: linear-gradient(180deg, #0d1219 0%, {BG} 100%);
+    border-right: 1px solid rgba(255,255,255,0.06);
+  }}
+
+  /* ---- Metric cards ---- */
   [data-testid="stMetric"] {{
     background: {BG_CARD};
     border: 1px solid {BORDER};
@@ -67,6 +94,12 @@ def inject_global_css():
     padding: 0.75rem 0.9rem;
     overflow: visible !important;
     min-width: 0;
+    transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+  }}
+  [data-testid="stMetric"]:hover {{
+    border-color: rgba(54,179,126,0.35);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+    transform: translateY(-1px);
   }}
   [data-testid="stMetricLabel"] {{
     color: {TEXT_MUTED} !important;
@@ -80,10 +113,13 @@ def inject_global_css():
     white-space: nowrap !important;
     font-size: 1.35rem !important;
     line-height: 1.25 !important;
+    font-variant-numeric: tabular-nums;
   }}
   [data-testid="stMetricDelta"] {{
     overflow: visible !important;
+    font-variant-numeric: tabular-nums;
   }}
+
   /* ---- Section radio (horizontal) as clear separate pills ---- */
   div[role="radiogroup"] {{
     display: flex !important;
@@ -106,10 +142,13 @@ def inject_global_css():
     min-height: 2.35rem !important;
     display: inline-flex !important;
     align-items: center !important;
+    transition: border-color .15s ease, color .15s ease,
+                background .15s ease, transform .15s ease;
   }}
   div[role="radiogroup"] label:hover {{
     border-color: rgba(54,179,126,0.45) !important;
     color: {TEXT} !important;
+    transform: translateY(-1px);
   }}
   /* Selected option (Base Web marks the input; style the checked label) */
   div[role="radiogroup"] label:has(input:checked) {{
@@ -127,11 +166,83 @@ def inject_global_css():
   div[role="radiogroup"] label > div:first-child {{
     display: none !important;
   }}
-  .stButton > button {{
+
+  /* ---- Buttons ---- */
+  .stButton > button, [data-testid="stFormSubmitButton"] > button {{
     border-radius: 10px !important;
     font-weight: 600 !important;
+    transition: transform .14s ease, box-shadow .14s ease,
+                border-color .14s ease, background .14s ease;
+  }}
+  .stButton > button:hover, [data-testid="stFormSubmitButton"] > button:hover {{
+    transform: translateY(-1px);
+  }}
+  /* kind is "primary" on st.button, "primaryFormSubmit" on form submit —
+     prefix-match catches both */
+  .stButton > button[kind^="primary"],
+  [data-testid="stFormSubmitButton"] > button[kind^="primary"] {{
+    background: linear-gradient(135deg, {ACCENT} 0%, #2d8f65 100%) !important;
+    border: none !important;
+    color: #04110a !important;
+  }}
+  .stButton > button[kind^="primary"]:hover,
+  [data-testid="stFormSubmitButton"] > button[kind^="primary"]:hover {{
+    box-shadow: 0 4px 16px rgba(54,179,126,0.35);
+  }}
+
+  /* ---- Inputs, selects, uploader, forms, expanders ---- */
+  .stTextInput input, .stNumberInput input, .stTextArea textarea {{
+    border-radius: 10px !important;
+  }}
+  [data-baseweb="select"] > div {{ border-radius: 10px !important; }}
+  [data-testid="stFileUploaderDropzone"] {{
+    background: {BG_SOFT} !important;
+    border: 1px dashed rgba(255,255,255,0.18) !important;
+    border-radius: 12px !important;
+  }}
+  [data-testid="stForm"] {{
+    background: {BG_CARD};
+    border: 1px solid {BORDER};
+    border-radius: 16px;
+    padding: 1.1rem 1.2rem;
+  }}
+  [data-testid="stExpander"] details {{
+    border: 1px solid {BORDER} !important;
+    border-radius: 12px !important;
+    background: rgba(255,255,255,0.02);
+  }}
+  [data-testid="stExpander"] summary {{ font-weight: 600; }}
+
+  /* ---- Tables / alerts / dividers ---- */
+  [data-testid="stDataFrame"] {{
+    border: 1px solid {BORDER};
+    border-radius: 12px;
+    overflow: hidden;
   }}
   div[data-testid="stAlert"] {{ border-radius: 12px !important; }}
+  hr {{ border-color: rgba(255,255,255,0.08) !important; }}
+
+  /* ---- Custom HTML card hover (progressive enhancement on inline styles) */
+  .sp-pick, .sp-card {{
+    transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+  }}
+  .sp-pick:hover {{
+    transform: translateY(-2px);
+    border-color: rgba(54,179,126,0.4) !important;
+    box-shadow: 0 10px 26px rgba(0,0,0,0.32) !important;
+  }}
+  .sp-card:hover {{ border-color: rgba(255,255,255,0.18) !important; }}
+
+  /* ---- Thin dark scrollbars ---- */
+  ::-webkit-scrollbar {{ width: 10px; height: 10px; }}
+  ::-webkit-scrollbar-track {{ background: transparent; }}
+  ::-webkit-scrollbar-thumb {{
+    background: rgba(255,255,255,0.14);
+    border-radius: 8px;
+    border: 2px solid {BG};
+  }}
+  ::-webkit-scrollbar-thumb:hover {{ background: rgba(255,255,255,0.24); }}
+
   footer {{ visibility: hidden; }}
 </style>
 """
@@ -190,14 +301,16 @@ def brand_strip(subtitle: str = "AI analytics"):
     sub = html_lib.escape(subtitle)
     if icon:
         img = (
+            f'<div style="padding:2px;border-radius:12px;line-height:0;'
+            f'background:linear-gradient(135deg,{ACCENT} 0%,#2d8f65 55%,{BLUE} 100%);">'
             f'<img src="{icon}" alt="logo" width="36" height="36" '
-            f'style="border-radius:10px;display:block;" />'
+            f'style="border-radius:10px;display:block;" /></div>'
         )
     else:
         img = (
             f'<div style="width:36px;height:36px;border-radius:10px;'
-            f'background:{ACCENT};color:#04110a;font-weight:800;'
-            f'display:flex;align-items:center;justify-content:center;'
+            f'background:linear-gradient(135deg,{ACCENT},#2d8f65);color:#04110a;'
+            f'font-weight:800;display:flex;align-items:center;justify-content:center;'
             f'font-size:0.85rem;">AI</div>'
         )
     st.markdown(
@@ -217,26 +330,41 @@ def brand_strip(subtitle: str = "AI analytics"):
 
 
 def page_hero(title: str, subtitle: str, chips: list[str] | None = None):
-    """Page title + subtitle using Streamlit natives (always readable)."""
-    # Small spacer so the first heading never sits under the Streamlit toolbar
+    """Gradient hero card: page title + subtitle + status chips."""
+    # Small spacer so the hero never sits under the Streamlit toolbar
     st.markdown(
         "<div style='height:0.35rem;overflow:visible;'></div>",
         unsafe_allow_html=True,
     )
-    st.markdown(f"### {html_lib.escape(title)}")
-    st.caption(subtitle)
+    chips_html = ""
     if chips:
         parts = []
         for c in chips:
             safe = html_lib.escape(c)
             parts.append(
-                f'<span style="display:inline-block;margin:0 0.35rem 0.35rem 0;'
+                f'<span style="display:inline-block;margin:0 0.35rem 0.1rem 0;'
                 f'padding:0.28rem 0.7rem;border-radius:999px;font-size:0.78rem;'
-                f'font-weight:600;background:{BG_SOFT};border:1px solid {BORDER};'
-                f'color:{TEXT_MUTED};">{safe}</span>'
+                f'font-weight:600;background:rgba(255,255,255,0.05);'
+                f'border:1px solid {BORDER};color:{TEXT_MUTED};">{safe}</span>'
             )
-        st.markdown("".join(parts), unsafe_allow_html=True)
-    st.divider()
+        chips_html = (
+            f'<div style="margin-top:0.7rem;">{"".join(parts)}</div>'
+        )
+    st.markdown(
+        f"""
+<div style="border-radius:18px;padding:1.15rem 1.35rem;margin:0 0 1rem 0;
+            background:linear-gradient(135deg,rgba(54,179,126,0.13) 0%,
+                        rgba(22,29,39,0.92) 45%,rgba(108,182,255,0.08) 100%),{BG_CARD};
+            border:1px solid {BORDER};overflow:hidden;">
+  <div style="font-size:1.45rem;font-weight:800;color:{TEXT};
+              letter-spacing:-0.03em;line-height:1.2;">{html_lib.escape(title)}</div>
+  <div style="font-size:0.92rem;color:{TEXT_MUTED};margin-top:0.3rem;
+              line-height:1.45;">{html_lib.escape(subtitle)}</div>
+  {chips_html}
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def footer_bar(
@@ -246,7 +374,8 @@ def footer_bar(
     st.markdown(
         f"""
 <div style="position:fixed;left:0;bottom:0;width:100%;text-align:center;
-            padding:0.55rem 1rem;background:rgba(11,15,20,0.94);
+            padding:0.55rem 1rem;background:rgba(11,15,20,0.82);
+            backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
             color:{TEXT_DIM};font-size:0.78rem;z-index:999;
             border-top:1px solid {BORDER};">
   {safe}
@@ -257,23 +386,33 @@ def footer_bar(
 
 
 def signal_banner_html(signal: str, title: str, body: str) -> str:
-    """Self-contained colored banner (inline styles only)."""
+    """Self-contained colored banner with an icon bubble (inline styles only)."""
     if signal == "BUY":
         bg, border, fg = ACCENT_SOFT, "rgba(54,179,126,0.45)", ACCENT
+        glow, icon = "rgba(54,179,126,0.12)", "▲"
     elif signal == "SELL":
         bg, border, fg = RED_SOFT, "rgba(240,113,120,0.45)", RED
+        glow, icon = "rgba(240,113,120,0.12)", "▼"
     else:
         bg, border, fg = AMBER_SOFT, "rgba(230,180,80,0.45)", AMBER
+        glow, icon = "rgba(230,180,80,0.10)", "◆"
     t = html_lib.escape(title)
     b = html_lib.escape(body)
     return f"""
-<div style="border-radius:14px;padding:1rem 1.15rem;margin:0.15rem 0 0.5rem 0;
-            background:{bg};border:1px solid {border};">
-  <div style="font-size:1.15rem;font-weight:800;color:{fg};letter-spacing:-0.02em;">
-    {t}
-  </div>
-  <div style="font-size:0.9rem;color:{TEXT_MUTED};margin-top:0.35rem;line-height:1.4;">
-    {b}
+<div style="display:flex;gap:0.85rem;align-items:flex-start;border-radius:16px;
+            padding:1rem 1.15rem;margin:0.15rem 0 0.5rem 0;
+            background:linear-gradient(135deg,{bg} 0%,rgba(22,29,39,0.85) 75%);
+            border:1px solid {border};box-shadow:0 0 26px {glow};">
+  <div style="width:2.5rem;height:2.5rem;border-radius:12px;flex:none;
+              background:{bg};border:1px solid {border};color:{fg};
+              display:flex;align-items:center;justify-content:center;
+              font-size:1.05rem;font-weight:800;">{icon}</div>
+  <div>
+    <div style="font-size:1.18rem;font-weight:800;color:{fg};letter-spacing:-0.02em;
+                line-height:1.25;">{t}</div>
+    <div style="font-size:0.9rem;color:{TEXT_MUTED};margin-top:0.3rem;line-height:1.4;">
+      {b}
+    </div>
   </div>
 </div>
 """
@@ -288,9 +427,10 @@ def card_html(title: str, lines: list[str], accent: str = ACCENT) -> str:
         for line in lines
     )
     return f"""
-<div style="border-radius:14px;padding:0.9rem 1rem;margin-bottom:0.5rem;
+<div class="sp-card" style="border-radius:14px;padding:0.9rem 1rem;margin-bottom:0.5rem;
             background:{BG_CARD};border:1px solid {BORDER};
-            border-left:3px solid {accent};">
+            border-left:3px solid {accent};
+            box-shadow:0 3px 10px rgba(0,0,0,0.18);">
   <div style="font-size:0.95rem;font-weight:700;color:{TEXT};">{t}</div>
   {body}
 </div>
@@ -331,7 +471,7 @@ def pick_card_html(
         )
 
     return f"""
-<div style="border-radius:16px;padding:1rem 1.05rem 0.95rem 1.05rem;margin-bottom:0.65rem;
+<div class="sp-pick" style="border-radius:16px;padding:1rem 1.05rem 0.95rem 1.05rem;margin-bottom:0.65rem;
             background:linear-gradient(160deg,{BG_CARD} 0%,{BG_SOFT} 100%);
             border:1px solid {BORDER};
             box-shadow:0 6px 18px rgba(0,0,0,0.22);">
