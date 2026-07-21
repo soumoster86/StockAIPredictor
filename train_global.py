@@ -42,9 +42,13 @@ from model import (
 
 def load_watchlist(path):
     rows = {}
-    with open(path, newline="", encoding="utf-8") as f:
+    # utf-8-sig strips the Excel/Windows BOM so the first header parses as
+    # "Name" not "﻿Name"; the explicit ﻿ replace mirrors
+    # ui.services.load_stock_list as a belt-and-suspenders guard.
+    with open(path, newline="", encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
-            r = {k.strip().lower(): (v or "").strip() for k, v in r.items()}
+            r = {k.replace("﻿", "").strip().lower(): (v or "").strip()
+                 for k, v in r.items()}
             name, sym = r.get("name"), r.get("symbol", "").upper()
             if name and sym and sym not in rows.values():
                 rows[name] = sym

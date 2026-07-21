@@ -25,9 +25,54 @@ def test_features_have_no_nans_after_warmup():
 def test_target_tails_stay_nan_per_horizon():
     d = add_features(synth_ohlcv())
     for h in HORIZONS:
-        assert int(d[f"Target_{h}"].isna().sum()) == h, f"horizon {h}"
+        # The last h rows have no future -> always NaN (usable for prediction).
+        # Interior rows may also be NaN now (ambiguous-move dead-band), so we
+        # assert on the tail specifically rather than the total NaN count.
+        assert bool(d[f"Target_{h}"].tail(h).isna().all()), f"horizon {h} tail"
+        # The row immediately before the tail has a future -> must be labeled.
+        assert not bool(pd.isna(d[f"Target_{h}"].iloc[-(h + 1)])), f"horizon {h} pre-tail"
     # Latest row keeps valid features for live prediction
     assert not d[FEATURES].tail(1).isna().any().any()
+
+
+def test_labels_are_binary_and_have_both_classes():
+    d = add_features(synth_ohlcv())
+    for h in HORIZONS:
+        vals = d[f"Target_{h}"].dropna().unique()
+        assert set(vals).issubset({0.0, 1.0}), f"horizon {h} not binary"
+        assert len(vals) == 2, f"horizon {h} is single-class"
+
+
+def test_deadband_drops_ambiguous_interior_rows():
+    """The dead-band must remove some interior (has-future) rows beyond the
+    h no-future tail, and must shrink as the band width goes to zero."""
+    import data as data_mod
+
+    d = add_features(synth_ohlcv())
+    interior_nans = int(d["Target_1"].iloc[:-1].isna().sum())
+    assert interior_nans > 0, "dead-band dropped no interior rows"
+
+    orig = data_mod.LABEL_DEADBAND_K
+    try:
+        data_mod.LABEL_DEADBAND_K = 0.0
+        d0 = add_features(synth_ohlcv())
+        assert int(d0["Target_1"].iloc[:-1].isna().sum()) == 0
+    finally:
+        data_mod.LABEL_DEADBAND_K = orig
+
+
+def test_threshold_scales_with_stock_volatility():
+    """The up-label threshold must rise with the stock's volatility: the
+    smallest forward move that still earns a '1' should be larger for a
+    high-vol stock than a calm one."""
+    calm = add_features(synth_ohlcv(vol=0.008, seed=3))
+    wild = add_features(synth_ohlcv(vol=0.030, seed=3))
+
+    def min_up_move(d):
+        fwd = d["Close"].pct_change().shift(-1)
+        return float(fwd[d["Target_1"] == 1.0].min())
+
+    assert min_up_move(wild) > min_up_move(calm)
 
 
 def test_nifty_relative_strength_recovers_planted_alpha():

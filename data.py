@@ -7,7 +7,16 @@ import yfinance as yf
 
 # Prediction horizons (trading days)
 HORIZONS = [1, 3, 5, 10, 20]
-NOISE_THRESHOLD = 0.002  # 1-day "meaningful move" threshold; scaled by sqrt(h)
+# Label thresholds. NOISE_THRESHOLD is the legacy flat band, kept as the
+# warm-up fallback. VOL_THRESHOLD_K scales the "meaningful up move" band by
+# each stock's own daily volatility (Vol20) so 0.2% doesn't mean the same
+# thing for a calm large-cap and a wild small-cap. LABEL_DEADBAND_K sets a
+# thin ambiguous band around the threshold whose near-coin-flip rows are
+# dropped from training. See add_features() for the full rationale.
+NOISE_THRESHOLD = 0.002   # legacy flat band; used only during Vol20 warm-up
+VOL_THRESHOLD_K = 0.10    # threshold = k · Vol20 · sqrt(h); 0.10 keeps the
+                          # universe-median base rate ≈ the old flat band
+LABEL_DEADBAND_K = 0.05   # dead-band half-width = k · Vol20 · sqrt(h)
 INDEX_SYMBOL = "^NSEI"   # NIFTY 50 — market context for Indian stocks
 
 # Single source of truth for model features. All are scale-free.
@@ -204,14 +213,38 @@ def add_features(data, index_close=None):
             data[col] = 0.0
 
     # ----- Multi-horizon targets -----
-    # Target_h = 1 if the h-day-forward return exceeds a noise threshold that
-    # scales with sqrt(h) (volatility grows with the square root of time).
-    # The last h rows have no future to look at: they stay NaN — never 0 —
-    # so they can be excluded from training but still used for prediction.
+    # Target_h = 1 when the h-day-forward return clears a "meaningful up move"
+    # threshold, 0 when it clearly does not. Two choices sharpen the label:
+    #
+    #   Volatility-scaled threshold — a flat 0.2% band means different things
+    #   for a calm large-cap and a wild small-cap. Scaling the band by this
+    #   stock's own daily volatility (Vol20), and by sqrt(h) since dispersion
+    #   grows with the square root of time, makes the label mean the same
+    #   thing across every name in the universe.
+    #
+    #   Ambiguous dead-band — rows whose forward return lands right on the
+    #   threshold are near-coin-flips whose 0/1 label is mostly noise. Those
+    #   fall in [thr − band, thr + band] and are set to NaN so they drop out
+    #   of training, leaving decisively up / not-up moves to learn from.
+    #
+    # The last h rows have no future to look at: they stay NaN — never 0 — so
+    # they can be excluded from training but still used for live prediction.
+    vol_daily = data['Vol20']
     for h in HORIZONS:
         fwd = close.pct_change(h).shift(-h)
-        thr = NOISE_THRESHOLD * np.sqrt(h)
-        data[f'Target_{h}'] = np.where(fwd.notna(), (fwd > thr).astype(float), np.nan)
+        scale = vol_daily * np.sqrt(h)
+        flat = NOISE_THRESHOLD * np.sqrt(h)
+        # Fall back to the flat band wherever Vol20 is still warming up
+        # (those rows are dropped later by dropna(FEATURES) anyway).
+        valid_scale = scale > 0
+        thr = (VOL_THRESHOLD_K * scale).where(valid_scale, flat).fillna(flat)
+        band = (LABEL_DEADBAND_K * scale).where(valid_scale, 0.0).fillna(0.0)
+
+        up = fwd > (thr + band)
+        ambiguous = (fwd >= (thr - band)) & (fwd <= (thr + band))
+        label = np.where(up, 1.0, 0.0)
+        label = np.where(ambiguous.to_numpy() | fwd.isna().to_numpy(), np.nan, label)
+        data[f'Target_{h}'] = label
 
     data['Target'] = data['Target_1']  # backward-compatible alias
 
