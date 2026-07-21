@@ -318,6 +318,7 @@
     "BLUESTARCO.NS",
     "BLUESTONE.NS",
     "BLUSPRING.NS",
+    "BMWVENTLTD.NS",
     "BODALCHEM.NS",
     "BOHRAIND.NS",
     "BOMDYEING.NS",
@@ -643,6 +644,7 @@
     "GANDHITUBE.NS",
     "GANECOS.NS",
     "GANESHBE.NS",
+    "GANESHCP.NS",
     "GANESHHOU.NS",
     "GANGAFORGE.NS",
     "GANGESSECU.NS",
@@ -1073,6 +1075,12 @@
     "KRITIKA.NS",
     "KRITINUT.NS",
     "KRN.NS",
+    "KRONOX.NS",
+    "KROSS.NS",
+    "KRSNAA.NS",
+    "KRYSTAL.NS",
+    "KSB.NS",
+    "KSCL.NS",
     "KSHITIJPOL.NS",
     "KSL.NS",
     "KSOLVES.NS",
@@ -1633,6 +1641,7 @@
     "SAHYADRI.NS",
     "SAIL.NS",
     "SAILIFE.NS",
+    "SAKAR.NS",
     "SAKHTISUG.NS",
     "SAKSOFT.NS",
     "SAKUMA.NS",
@@ -1780,6 +1789,7 @@
     "SOFTTECH.NS",
     "SOLARA.NS",
     "SOLARINDS.NS",
+    "SOLARWORLD.NS",
     "SOLEX.NS",
     "SOMANYCERA.NS",
     "SOMATEX.NS",
@@ -2160,39 +2170,66 @@
     "ZYDUSLIFE.NS",
     "ZYDUSWELL.NS"
   ],
-  "n_stocks": 2159,
+  "n_stocks": 2169,
   "model": "Ensemble",
-  "trained_at": "2026-07-20 19:32",
+  "trained_at": "2026-07-21 22:16",
+  "split": "time",
+  "source_watchlist": "stocks.csv",
   "horizons": {
     "1": {
-      "rows": 2863062,
-      "stocks": 2158,
-      "accuracy": 0.5944,
-      "baseline": 0.574
+      "rows": 2745199,
+      "stocks": 2168,
+      "n_train": 2107151,
+      "n_test": 636138,
+      "cut_date": "2025-04-15",
+      "embargo_days": 1,
+      "split": "time",
+      "accuracy": 0.5896,
+      "baseline": 0.5967
     },
     "3": {
-      "rows": 2858746,
-      "stocks": 2158,
-      "accuracy": 0.5866,
-      "baseline": 0.5615
+      "rows": 2744685,
+      "stocks": 2168,
+      "n_train": 2106213,
+      "n_test": 636477,
+      "cut_date": "2025-04-09",
+      "embargo_days": 3,
+      "split": "time",
+      "accuracy": 0.59,
+      "baseline": 0.5946
     },
     "5": {
-      "rows": 2854430,
-      "stocks": 2158,
-      "accuracy": 0.5812,
-      "baseline": 0.5528
+      "rows": 2741705,
+      "stocks": 2168,
+      "n_train": 2102655,
+      "n_test": 633050,
+      "cut_date": "2025-04-07",
+      "embargo_days": 5,
+      "split": "time",
+      "accuracy": 0.5843,
+      "baseline": 0.5968
     },
     "10": {
-      "rows": 2843640,
-      "stocks": 2158,
-      "accuracy": 0.5827,
-      "baseline": 0.5409
+      "rows": 2733854,
+      "stocks": 2168,
+      "n_train": 2096480,
+      "n_test": 623697,
+      "cut_date": "2025-04-01",
+      "embargo_days": 10,
+      "split": "time",
+      "accuracy": 0.5961,
+      "baseline": 0.5969
     },
     "20": {
-      "rows": 2822060,
-      "stocks": 2158,
-      "accuracy": 0.5859,
-      "baseline": 0.5187
+      "rows": 2716743,
+      "stocks": 2168,
+      "n_train": 2083756,
+      "n_test": 607978,
+      "cut_date": "2025-03-19",
+      "embargo_days": 20,
+      "split": "time",
+      "accuracy": 0.5948,
+      "baseline": 0.5858
     }
   }
 }
