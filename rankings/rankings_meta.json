@@ -1,11 +1,11 @@
 {
-  "generated_at": "2026-07-21T20:06:19Z",
+  "generated_at": "2026-07-23T09:50:45Z",
   "n_requested": 2367,
-  "n_scored": 2049,
-  "n_failed": 318,
+  "n_scored": 2050,
+  "n_failed": 317,
   "batch_size": 80,
   "engine": "global",
-  "elapsed_s": 933.1,
+  "elapsed_s": 756.5,
   "source": "precomputed",
   "watchlist": "stocks_universe.csv",
   "failures_sample": [
