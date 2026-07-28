@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-07-28T16:23:05Z",
+  "generated_at": "2026-07-28T19:52:54Z",
   "n_requested": 2367,
   "n_scored": 2053,
   "n_failed": 314,
   "batch_size": 80,
   "engine": "global",
-  "elapsed_s": 523.5,
+  "elapsed_s": 543.1,
   "source": "precomputed",
   "watchlist": "stocks_universe.csv",
   "runner": "github-actions",
-  "run_id": "30377190414",
-  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/30377190414",
+  "run_id": "30393118905",
+  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/30393118905",
   "workflow": "Nightly rankings",
   "failures_sample": [
     {
