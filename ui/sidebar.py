@@ -124,8 +124,12 @@ def render_sidebar():
                     "Load precomputed", key="sidebar_precomp",
                     use_container_width=True,
                 ):
-                    seed_session_from_precomputed(stocks, allow_stale=True)
+                    seed_session_from_precomputed(
+                        stocks, allow_stale=True, load_mode="manual",
+                    )
                     st.rerun()
+            if sp.get("source_short"):
+                st.caption(f"Source · **{sp['source_short']}**")
             bl = batch_progress_label(stocks, 1)
             scan_btn = (
                 f"Live batch {bl['next_batch']}/{bl['total_batches']}"

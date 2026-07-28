@@ -649,35 +649,57 @@ def _scanner_summary_metrics(scan_df, prog):
     top_score = float(scan_df["Buy Score"].max()) if "Buy Score" in scan_df else 0.0
 
     sc1, sc2, sc3, sc4, sc5 = st.columns(5)
-    if prog.get("source") == "precomputed":
-        sc1.metric("Source", "Offline", help="Precomputed rankings file.")
-    else:
-        sc1.metric(
+    # Always show dynamic Source (Nightly / Manual load / Live scan / …)
+    sc1.metric(
+        "Source",
+        prog.get("source_short") or "—",
+        help=prog.get("source_help") or "How this session’s rankings were loaded.",
+    )
+    if prog.get("source") == "live":
+        sc2.metric(
             "Coverage",
             f"{prog['attempted']}/{prog['total']}",
-            help="Symbols attempted vs full watchlist size.",
+            help="Symbols attempted vs full watchlist size (live scan only).",
         )
-    sc2.metric("Scored", f"{len(scan_df):,}")
-    sc3.metric("BUY", f"{n_buy:,}", help="Screen calls = BUY")
-    sc4.metric("SELL", f"{n_sell:,}", help="Screen calls = SELL")
-    sc5.metric("Top score", f"{top_score:.0f}", help="Highest Buy Score in results")
+    else:
+        sc2.metric("Scored", f"{len(scan_df):,}")
+    if prog.get("source") == "live":
+        sc3.metric("Scored", f"{len(scan_df):,}")
+        sc4.metric("BUY", f"{n_buy:,}", help="Screen calls = BUY")
+        sc5.metric("SELL", f"{n_sell:,}", help="Screen calls = SELL")
+    else:
+        sc3.metric("BUY", f"{n_buy:,}", help="Screen calls = BUY")
+        sc4.metric("SELL", f"{n_sell:,}", help="Screen calls = SELL")
+        sc5.metric("Top score", f"{top_score:.0f}", help="Highest Buy Score in results")
 
 
 def _scanner_status_line(prog, scan_df):
-    """One-line status under the KPI strip."""
-    if prog.get("source") == "precomputed":
-        st.caption(
-            f"Offline rankings · **{len(scan_df):,}** names · "
-            f"as of **{prog.get('asof') or '—'}** · screen only, not the full Signal"
-        )
+    """One-line status under the KPI strip — reflects Nightly / Manual / Live."""
+    title = prog.get("source_title") or prog.get("source_short") or "Screener"
+    asof = prog.get("asof") or "—"
+    n = len(scan_df)
+    origin = prog.get("origin") or prog.get("source")
+
+    if origin in ("nightly", "manual", "local", "precomputed") or prog.get("source") == "precomputed":
+        bits = [
+            f"**{title}** · **{n:,}** names · as of **{asof}**",
+        ]
+        if prog.get("workflow"):
+            bits.append(f"workflow **{prog['workflow']}**")
+        elif prog.get("runner"):
+            bits.append(f"runner **{prog['runner']}**")
+        bits.append("screen only, not the full Signal")
+        st.caption(" · ".join(bits))
+        if prog.get("run_url"):
+            st.caption(f"CI run: {prog['run_url']}")
     elif prog.get("complete"):
         st.caption(
-            f"Live scan complete · **{len(scan_df)}** scored · "
+            f"**Live scan** complete · **{n}** scored · "
             f"**{prog['failed']}** skipped · screen only"
         )
     else:
         st.caption(
-            f"Partial live scan · **{len(scan_df)}** scored so far · "
+            f"**Live scan** partial · **{n}** scored so far · "
             f"open **Data source** to cover more of the list"
         )
 
@@ -708,12 +730,14 @@ def _render_scanner_data_source(stocks, prog, pre, scan_failures):
                 "Load precomputed rankings",
                 type="primary",
                 use_container_width=True,
-                help="Instant load from rankings/rankings_latest.csv (no Yahoo calls).",
+                help="Manual load from rankings/rankings_latest.csv (no Yahoo calls). Source becomes Manual load.",
                 key="scr_load_precomputed",
             ):
-                if seed_session_from_precomputed(stocks, allow_stale=True):
+                if seed_session_from_precomputed(
+                    stocks, allow_stale=True, load_mode="manual",
+                ):
                     st.session_state["scanner_panel"] = "Top picks"
-                    st.toast("Loaded precomputed rankings", icon="⚡")
+                    st.toast("Manual load · precomputed rankings", icon="⚡")
                     st.rerun()
                 else:
                     st.warning("Could not load precomputed file.")
@@ -737,8 +761,9 @@ def _render_scanner_data_source(stocks, prog, pre, scan_failures):
     st.markdown("##### Live batch scan")
     if prog.get("source") == "precomputed" and prog.get("asof"):
         st.info(
-            f"Currently showing **precomputed** data (as of **{prog['asof']}**). "
-            "Start a live scan to switch to Yahoo."
+            f"Currently showing **{prog.get('source_title') or 'precomputed'}** "
+            f"(as of **{prog['asof']}**). "
+            "Start a live scan to switch Source to **Live scan**."
         )
 
     attempted = prog["attempted"]
@@ -822,11 +847,12 @@ def _render_scanner_data_source(stocks, prog, pre, scan_failures):
     bl_now = batch_progress_label(stocks, 1)
     if prog.get("source") == "precomputed":
         st.caption(
-            f"Engine: **{engine}** · offline rankings · watchlist **{prog['total']}**"
+            f"Engine: **{engine}** · source **{prog.get('source_short') or 'Precomputed'}** · "
+            f"watchlist **{prog['total']}**"
         )
     else:
         st.caption(
-            f"Engine: **{engine}** · batch size **{SCAN_BATCH}** · "
+            f"Engine: **{engine}** · source **Live scan** · batch size **{SCAN_BATCH}** · "
             f"progress **batch {min(bl_now['next_batch'], bl_now['total_batches'])} "
             f"of {bl_now['total_batches']}** · "
             f"{prog['attempted']}/{prog['total']} symbols"
@@ -1037,7 +1063,7 @@ def _render_scanner_full_table(scan_df, prog, display_name):
             + (f" · sector **{filters['my_sector']}**" if filters["only_sector"] else "")
         )
 
-    src = prog.get("source") or "live"
+    src = prog.get("source_short") or prog.get("source") or "—"
     dl1, dl2 = st.columns([2, 1])
     with dl1:
         st.caption(
