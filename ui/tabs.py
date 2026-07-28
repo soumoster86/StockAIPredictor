@@ -499,98 +499,103 @@ def _render_buy_pick_card(rank, row, key_prefix, on_jump):
     )
 
 
-def render_scanner_tab(ctx):
-    stocks = ctx["stocks"]
-    symbol = ctx["symbol"]
-    signal = ctx["signal"]
+def _scanner_summary_metrics(scan_df, prog):
+    """Compact KPI strip for scored results."""
+    n_buy = int((scan_df["Screen"] == "BUY").sum()) if "Screen" in scan_df else 0
+    n_sell = int((scan_df["Screen"] == "SELL").sum()) if "Screen" in scan_df else 0
+    top_score = float(scan_df["Buy Score"].max()) if "Buy Score" in scan_df else 0.0
 
-    ensure_scan_session(stocks)
-    # Instant path: seed from offline rankings when session is empty & file is fresh
-    maybe_autoseed_precomputed(stocks)
-    prog = scan_progress(stocks)
-    pre = precomputed_status(stocks)
+    sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+    if prog.get("source") == "precomputed":
+        sc1.metric("Source", "Offline", help="Precomputed rankings file.")
+    else:
+        sc1.metric(
+            "Coverage",
+            f"{prog['attempted']}/{prog['total']}",
+            help="Symbols attempted vs full watchlist size.",
+        )
+    sc2.metric("Scored", f"{len(scan_df):,}")
+    sc3.metric("BUY", f"{n_buy:,}", help="Screen calls = BUY")
+    sc4.metric("SELL", f"{n_sell:,}", help="Screen calls = SELL")
+    sc5.metric("Top score", f"{top_score:.0f}", help="Highest Buy Score in results")
 
-    section_header("Screener")
+
+def _scanner_status_line(prog, scan_df):
+    """One-line status under the KPI strip."""
+    if prog.get("source") == "precomputed":
+        st.caption(
+            f"Offline rankings · **{len(scan_df):,}** names · "
+            f"as of **{prog.get('asof') or '—'}** · screen only, not the full Signal"
+        )
+    elif prog.get("complete"):
+        st.caption(
+            f"Live scan complete · **{len(scan_df)}** scored · "
+            f"**{prog['failed']}** skipped · screen only"
+        )
+    else:
+        st.caption(
+            f"Partial live scan · **{len(scan_df)}** scored so far · "
+            f"open **Data source** to cover more of the list"
+        )
+
+
+def _render_scanner_data_source(stocks, prog, pre, scan_failures):
+    """Section: load precomputed rankings + live batch controls."""
+    section_header("Data source")
     st.caption(
-        f"Full-universe screen · **{prog['total']}** names in list · "
-        f"live batches of **{SCAN_BATCH}** · optional precomputed rankings"
-    )
-    _engine = (
-        "global model"
-        if global_model_available()
-        else "fast per-stock tree"
-    )
-    st.markdown(
-        f"Prefer **precomputed rankings** (offline job) for instant results, or "
-        f"walk the list **live in batches of {SCAN_BATCH}**. Engine: **{_engine}**. "
-        "This is a **screen**, not the full stock Signal — open a name before "
-        "acting. **Educational only — not investment advice.**"
+        "Load offline rankings for instant results, or walk the list live in batches. "
+        "Screen only — open a stock for the full Signal."
     )
 
-    # ---- Precomputed rankings card ----
-    section_header("Precomputed rankings")
+    # ---- Offline ----
+    st.markdown("##### Offline rankings")
     if pre["available"]:
         stale_note = (
-            f" · ⚠️ file is **{pre.get('age_hours')}h** old (stale)"
+            f" · ⚠️ **{pre.get('age_hours')}h** old"
             if pre.get("stale") else " · fresh"
         )
         st.success(
-            f"Offline file ready · **{pre['n_watchlist']}** names overlap your "
-            f"watchlist (file has {pre['n_file']}) · as of **{pre.get('asof') or '—'}**"
+            f"**Ready** · {pre['n_watchlist']} names match your watchlist "
+            f"(file has {pre['n_file']}) · as of **{pre.get('asof') or '—'}**"
             f"{stale_note}"
         )
-        pc1, pc2 = st.columns(2)
+        pc1, pc2 = st.columns([1.2, 1.5])
         with pc1:
             if st.button(
-                "Load precomputed rankings", type="primary",
+                "Load precomputed rankings",
+                type="primary",
                 use_container_width=True,
                 help="Instant load from rankings/rankings_latest.csv (no Yahoo calls).",
+                key="scr_load_precomputed",
             ):
                 if seed_session_from_precomputed(stocks, allow_stale=True):
+                    st.session_state["scanner_panel"] = "Top picks"
                     st.toast("Loaded precomputed rankings", icon="⚡")
                     st.rerun()
                 else:
                     st.warning("Could not load precomputed file.")
         with pc2:
             st.caption(
-                "Regenerate:  \n"
-                "`python scripts/precompute_rankings.py`  \n"
-                "or **Actions → Nightly rankings → Run workflow**"
+                "Refresh offline file: `python scripts/precompute_rankings.py` "
+                "or **Actions → Nightly rankings**."
             )
-        meta = pre.get("meta") or {}
-        if meta.get("runner") == "github-actions" and meta.get("run_url"):
-            st.caption(f"Last CI run: {meta.get('run_url')}")
+            meta = pre.get("meta") or {}
+            if meta.get("runner") == "github-actions" and meta.get("run_url"):
+                st.caption(f"Last CI run: {meta.get('run_url')}")
     else:
         st.info(
-            "No precomputed rankings found (or none match this watchlist). "
-            "Run offline: `python scripts/precompute_rankings.py`, or trigger "
-            "**GitHub Actions → Nightly rankings**, then redeploy/restart — "
-            "or use **live batch scan** below."
+            "No precomputed rankings for this watchlist. Use live scan below, "
+            "or generate offline / trigger **Nightly rankings**."
         )
 
-    with st.expander("How Buy Score is calculated", expanded=False):
-        st.markdown(
-            """
-            | Factor | Weight (approx.) | What it rewards |
-            |--------|------------------|-----------------|
-            | **Probability Up** | ~50% | Higher chance of a meaningful 1-day up move |
-            | **Model edge** | ~20% | Test accuracy beating the majority baseline |
-            | **Lower risk** | ~12% | Calmer vol / ATR / drawdown score |
-            | **Reward : risk** | ~12% | ATR/structure trade plan with better R:R |
-            | **Near support** | ~6% | Price sitting closer to a recent swing floor |
+    st.divider()
 
-            Only names with a **BUY** screen call (prob above the default entry
-            threshold, usually 0.55) enter the shortlist. Optional filters below
-            can require edge and cap risk.
-            """
-        )
-
-    # ---- Live batch controls ----
-    section_header("Live batch scan")
+    # ---- Live ----
+    st.markdown("##### Live batch scan")
     if prog.get("source") == "precomputed" and prog.get("asof"):
         st.info(
-            f"⚡ Showing **precomputed** rankings (as of **{prog['asof']}**). "
-            "Use **Rescan from start** below to switch to a live Yahoo walk."
+            f"Currently showing **precomputed** data (as of **{prog['asof']}**). "
+            "Start a live scan to switch to Yahoo."
         )
 
     attempted = prog["attempted"]
@@ -601,24 +606,27 @@ def render_scanner_tab(ctx):
         text=(
             f"Precomputed · {prog['succeeded']} names · as of {prog.get('asof') or '—'}"
             if prog.get("source") == "precomputed" else
-            f"Covered {prog['attempted']} / {prog['total']} symbols · "
+            f"Covered {prog['attempted']} / {prog['total']} · "
             f"{prog['succeeded']} scored · {prog['failed']} skipped · "
-            f"{prog['remaining']} remaining"
+            f"{prog['remaining']} left"
         ),
     )
 
-    b1, b2, b3, b4 = st.columns([1.2, 1.2, 1.1, 1.1])
+    b1, b2, b3, b4 = st.columns(4)
     with b1:
         start_label = (
             f"Start live scan ({SCAN_BATCH})"
             if not prog["active"] and prog["attempted"] == 0
             else f"Rescan from start ({SCAN_BATCH})"
         )
-        if st.button(start_label, type="primary", use_container_width=True,
-                     help=HELP["scanner"]):
+        if st.button(
+            start_label, type="primary", use_container_width=True,
+            help=HELP["scanner"], key="scr_start_scan",
+        ):
             reset_scan_session(stocks)
             with st.spinner(f"Scanning first batch of {SCAN_BATCH}…"):
                 advance_scan_session(stocks, n_batches=1)
+            st.session_state["scanner_panel"] = "Top picks"
             st.rerun()
     with b2:
         next_n = min(SCAN_BATCH, prog["remaining"]) if prog["remaining"] else SCAN_BATCH
@@ -628,10 +636,11 @@ def render_scanner_tab(ctx):
             or prog["total"] == 0
         )
         if st.button(
-            f"Scan next batch ({next_n})" if prog["remaining"] else "Scan complete",
+            f"Scan next ({next_n})" if prog["remaining"] else "Scan complete",
             use_container_width=True,
             disabled=next_disabled,
-            help="Continue through the full universe without losing prior results.",
+            help="Continue through the universe without losing prior results.",
+            key="scr_next_batch",
         ):
             with st.spinner(f"Scanning next {SCAN_BATCH}…"):
                 advance_scan_session(stocks, n_batches=1)
@@ -644,110 +653,70 @@ def render_scanner_tab(ctx):
             or prog["total"] == 0
         )
         if st.button(
-            f"Scan +{multi} batches",
+            f"+{multi} batches",
             use_container_width=True,
             disabled=multi_disabled,
-            help="Run up to 3 batches in a row (faster coverage; still rate-limit aware).",
+            help="Run up to 3 batches in a row.",
+            key="scr_multi_batch",
         ):
             with st.spinner(f"Scanning up to {multi} batches…"):
                 advance_scan_session(stocks, n_batches=multi)
             st.rerun()
     with b4:
-        if st.button("Reset scan", use_container_width=True):
+        if st.button("Reset", use_container_width=True, key="scr_reset_scan"):
             reset_scan_session(stocks)
             st.rerun()
 
-    if prog["attempted"] == 0 and prog.get("source") != "precomputed":
-        st.info(
-            f"Load **precomputed rankings** above (if available), or "
-            f"**Start live scan** for the first **{SCAN_BATCH}** names, then "
-            f"**Scan next batch** until you cover all **{prog['total']}**."
-        )
-        return
+    engine = "global model" if global_model_available() else "fast per-stock tree"
+    st.caption(
+        f"Engine: **{engine}** · batch size **{SCAN_BATCH}** · "
+        f"watchlist **{prog['total']}** names"
+    )
 
-    scan_df = get_scan_results()
-    scan_failures = st.session_state.get("scan_failures") or []
+    if scan_failures:
+        with st.expander(f"{len(scan_failures)} stock(s) skipped", expanded=False):
+            for sym, reason in scan_failures[:100]:
+                st.markdown(f"- `{sym}` — {reason}")
+            if len(scan_failures) > 100:
+                st.caption(f"…and {len(scan_failures) - 100} more")
 
-    if scan_df.empty:
-        st.warning(
-            "No stocks scored yet — load precomputed rankings or run a live batch. "
-            "Yahoo may be rate-limiting live scans."
-        )
-        if scan_failures:
-            with st.expander(f"{len(scan_failures)} stock(s) skipped so far"):
-                for sym, reason in scan_failures[:80]:
-                    st.markdown(f"- `{sym}` — {reason}")
-                if len(scan_failures) > 80:
-                    st.caption(f"…and {len(scan_failures) - 80} more")
-        return
 
-    n_buy = int((scan_df["Screen"] == "BUY").sum())
-    n_sell = int((scan_df["Screen"] == "SELL").sum())
-    top_score = float(scan_df["Buy Score"].max()) if "Buy Score" in scan_df else 0
+def _render_scanner_top_picks(scan_df, symbol, signal):
+    """Section: filters + pick cards (primary user focus)."""
+    section_header("Top picks")
+    st.caption(
+        "Best long **screen** candidates by Buy Score. "
+        "Open full analysis before any decision — educational only."
+    )
 
-    # Short labels so values never clip in narrow metric cards
-    sc1, sc2, sc3, sc4, sc5 = st.columns(5)
-    if prog.get("source") == "precomputed":
-        sc1.metric(
-            "Source",
-            "Offline",
-            help="Precomputed rankings file (not a live Yahoo walk).",
-        )
-    else:
-        sc1.metric(
-            "Coverage",
-            f"{prog['attempted']}/{prog['total']}",
-            help="Symbols attempted vs full watchlist size.",
-        )
-    sc2.metric("Scored", f"{len(scan_df):,}")
-    sc3.metric("BUY", f"{n_buy:,}", help="Screen calls = BUY")
-    sc4.metric("SELL", f"{n_sell:,}", help="Screen calls = SELL")
-    sc5.metric("Top score", f"{top_score:.0f}", help="Highest Buy Score in results")
-
-    if prog.get("source") == "precomputed":
-        asof = prog.get("asof") or "—"
-        st.success(
-            f"**Source: Precomputed (offline)** · **{len(scan_df):,}** names · "
-            f"as of **{asof}**."
-        )
-    elif prog["complete"]:
-        st.success(
-            f"Full list covered ({prog['total']} symbols attempted). "
-            f"**{len(scan_df)}** scored · **{prog['failed']}** skipped."
-        )
-    else:
-        st.caption(
-            f"Partial universe — rankings use the **{len(scan_df)}** names scored "
-            f"so far. Keep clicking **Scan next batch** to improve coverage."
-        )
-
-    current_screen = scan_df[scan_df["Symbol"] == symbol]
+    current_screen = scan_df[scan_df["Symbol"] == symbol] if "Symbol" in scan_df else scan_df.iloc[0:0]
     if not current_screen.empty:
         screen_call = current_screen.iloc[0]["Screen"]
         if screen_call != signal:
             st.warning(
-                f"Scanner shows **{screen_call}** for {symbol}, while the full "
-                f"analysis signal is **{signal}**. Prefer the full Signal for "
-                "the selected stock."
+                f"Screen shows **{screen_call}** for `{symbol}`, full Signal is "
+                f"**{signal}** — prefer the full Signal for the selected stock."
             )
 
-    # ---- Filters for "best buys" shortlist ----
-    section_header("Shortlist filters")
-    f1, f2, f3, f4 = st.columns(4)
-    min_prob = f1.slider(
-        "Min probability", 0.50, 0.80, 0.55, 0.01,
-        help="Only BUY screens at or above this model probability.",
-    )
-    max_risk = f2.slider(
-        "Max risk score", 3.0, 10.0, 8.0, 0.5,
-        help="Drop names riskier than this (1 calm → 10 wild).",
-    )
-    top_n = f3.slider("Show top N", 3, 20, 8, 1)
-    require_edge = f4.checkbox(
-        "Require model edge",
-        value=True,
-        help="Keep only names where test accuracy ≥ majority baseline.",
-    )
+    with st.expander("Filters", expanded=True):
+        f1, f2, f3, f4 = st.columns(4)
+        min_prob = f1.slider(
+            "Min probability", 0.50, 0.80, 0.55, 0.01,
+            help="Only BUY screens at or above this model probability.",
+            key="scr_min_prob",
+        )
+        max_risk = f2.slider(
+            "Max risk score", 3.0, 10.0, 8.0, 0.5,
+            help="Drop names riskier than this (1 calm → 10 wild).",
+            key="scr_max_risk",
+        )
+        top_n = f3.slider("Show top N", 3, 20, 8, 1, key="scr_top_n")
+        require_edge = f4.checkbox(
+            "Require model edge",
+            value=True,
+            help="Keep only names where test accuracy ≥ majority baseline.",
+            key="scr_require_edge",
+        )
 
     picks = rank_buy_candidates(
         scan_df,
@@ -757,19 +726,16 @@ def render_scanner_tab(ctx):
         top_n=top_n,
     )
 
-    section_header("Top picks to open long")
     if picks.empty:
         st.info(
-            "No names pass the filters right now. Try lowering min probability, "
-            "raising max risk, or unticking “Require model edge”. "
-            "A empty shortlist is useful information too."
+            "No names pass these filters. Loosen probability / risk, or turn off "
+            "model edge. An empty shortlist is useful information."
         )
     else:
         def _jump_to(stock_name):
             from ui.stock_picker import set_stock_pick
             set_stock_pick(stock_name)
 
-        # Responsive grid of pick cards
         cols = st.columns(min(3, len(picks)))
         for i, (_, row) in enumerate(picks.iterrows()):
             with cols[i % len(cols)]:
@@ -777,54 +743,68 @@ def render_scanner_tab(ctx):
                     row.get("Rank", i + 1), row,
                     key_prefix="pick", on_jump=_jump_to,
                 )
-
         st.caption(
-            f"**{len(picks)}** candidate(s) after filters · sorted by Buy Score. "
-            "Tap **Open full analysis** before any decision."
+            f"**{len(picks)}** candidate(s) · sorted by Buy Score · "
+            "tap **Open analysis** for the full Signal"
         )
 
-        # Compact table of the shortlist
-        pick_view = picks[[
-            c for c in [
-                "Rank", "Symbol", "Name", "Buy Score", "Probability Up",
-                "Screen", "Risk", "Reward Risk", "To Support", "Test Acc",
-                "Baseline", "Day", "Price",
-            ] if c in picks.columns
-        ]]
-        _pv = style_map(pick_view.style, color_signal, ["Screen"])
-        if "Day" in pick_view.columns:
-            _pv = style_map(_pv, color_pos_neg, ["Day"])
-        st.dataframe(
-            _pv, use_container_width=True, hide_index=True,
-            column_config={
-                "Buy Score": st.column_config.ProgressColumn(
-                    "Buy Score", format="%.0f", min_value=0, max_value=100,
-                    help=HELP.get("buy_score", "Composite long-candidate score."),
-                ),
-                "Probability Up": st.column_config.ProgressColumn(
-                    format="percent", min_value=0, max_value=1, help=HELP["prob_up"],
-                ),
-                "Risk": st.column_config.NumberColumn("Risk /10", format="%.1f"),
-                "Reward Risk": st.column_config.NumberColumn("R:R", format="%.2f"),
-                "To Support": st.column_config.NumberColumn(format="percent"),
-                "Test Acc": st.column_config.NumberColumn(format="percent"),
-                "Baseline": st.column_config.NumberColumn(format="percent"),
-                "Day": st.column_config.NumberColumn(format="percent"),
-                "Price": st.column_config.NumberColumn(format="%.2f"),
-            },
+        with st.expander("Shortlist table", expanded=False):
+            pick_view = picks[[
+                c for c in [
+                    "Rank", "Symbol", "Name", "Buy Score", "Probability Up",
+                    "Screen", "Risk", "Reward Risk", "To Support", "Test Acc",
+                    "Baseline", "Day", "Price",
+                ] if c in picks.columns
+            ]]
+            _pv = style_map(pick_view.style, color_signal, ["Screen"])
+            if "Day" in pick_view.columns:
+                _pv = style_map(_pv, color_pos_neg, ["Day"])
+            st.dataframe(
+                _pv, use_container_width=True, hide_index=True,
+                column_config={
+                    "Buy Score": st.column_config.ProgressColumn(
+                        "Buy Score", format="%.0f", min_value=0, max_value=100,
+                        help=HELP.get("buy_score", "Composite long-candidate score."),
+                    ),
+                    "Probability Up": st.column_config.ProgressColumn(
+                        format="percent", min_value=0, max_value=1, help=HELP["prob_up"],
+                    ),
+                    "Risk": st.column_config.NumberColumn("Risk /10", format="%.1f"),
+                    "Reward Risk": st.column_config.NumberColumn("R:R", format="%.2f"),
+                    "To Support": st.column_config.NumberColumn(format="percent"),
+                    "Test Acc": st.column_config.NumberColumn(format="percent"),
+                    "Baseline": st.column_config.NumberColumn(format="percent"),
+                    "Day": st.column_config.NumberColumn(format="percent"),
+                    "Price": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
+
+    with st.expander("How Buy Score works", expanded=False):
+        st.markdown(
+            """
+            | Factor | Weight (approx.) | What it rewards |
+            |--------|------------------|-----------------|
+            | **Probability Up** | ~50% | Higher chance of a meaningful 1-day up move |
+            | **Model edge** | ~20% | Test accuracy beating the majority baseline |
+            | **Lower risk** | ~12% | Calmer vol / ATR / drawdown score |
+            | **Reward : risk** | ~12% | ATR/structure trade plan with better R:R |
+            | **Near support** | ~6% | Price sitting closer to a recent swing floor |
+
+            Only **BUY** screen calls enter the shortlist (default entry ~0.55).
+            """
         )
 
-    # ---- Alerts (Telegram / email) ----
-    _render_alerts_panel(scan_df, asof=prog.get("asof"))
 
-    # ---- Full watchlist table ----
-    st.divider()
-    section_header("Full watchlist ranking")
+def _render_scanner_full_table(scan_df, prog):
+    """Section: full watchlist ranking + CSV download."""
+    section_header("Full ranking")
+    st.caption("All scored names in this session. Screen only — not investment advice.")
+
     show_mode = st.radio(
-        "Table filter",
+        "Show",
         ["All", "BUY only", "SELL only"],
         horizontal=True,
-        label_visibility="collapsed",
+        key="scr_table_filter",
     )
     view_df = scan_df
     if show_mode == "BUY only":
@@ -872,23 +852,97 @@ def render_scanner_tab(ctx):
         )
 
     src = prog.get("source") or "live"
-    st.caption(
-        f"Source **{src}** · coverage **{prog['attempted']}/{prog['total']}** · "
-        "screen only — default thresholds. Open a stock for the full Signal. "
-        "Not financial advice."
+    dl1, dl2 = st.columns([2, 1])
+    with dl1:
+        st.caption(
+            f"Source **{src}** · coverage **{prog['attempted']}/{prog['total']}** · "
+            "default thresholds"
+        )
+    with dl2:
+        st.download_button(
+            "Download CSV",
+            scan_df.to_csv(index=False).encode(),
+            file_name="screener_results.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="scr_download_csv",
+        )
+
+
+def render_scanner_tab(ctx):
+    """Screener with segregated panels: Top picks | Full ranking | Data source | Alerts."""
+    stocks = ctx["stocks"]
+    symbol = ctx["symbol"]
+    signal = ctx["signal"]
+
+    ensure_scan_session(stocks)
+    maybe_autoseed_precomputed(stocks)
+    prog = scan_progress(stocks)
+    pre = precomputed_status(stocks)
+    scan_df = get_scan_results()
+    scan_failures = st.session_state.get("scan_failures") or []
+    has_results = scan_df is not None and not scan_df.empty
+
+    # ---- Slim page header ----
+    section_header("Screener")
+    _engine = (
+        "global model" if global_model_available() else "fast per-stock tree"
     )
-    st.download_button(
-        "Download scored results CSV",
-        scan_df.to_csv(index=False).encode(),
-        file_name="screener_results.csv", mime="text/csv",
+    st.caption(
+        f"**{prog['total']}** names · engine **{_engine}** · "
+        "screen ≠ full Signal · educational only"
     )
 
-    if scan_failures:
-        with st.expander(f"{len(scan_failures)} stock(s) skipped so far"):
-            for sym, reason in scan_failures[:100]:
-                st.markdown(f"- `{sym}` — {reason}")
-            if len(scan_failures) > 100:
-                st.caption(f"…and {len(scan_failures) - 100} more")
+    # ---- Sub-navigation (one focus at a time) ----
+    panels = ["Top picks", "Full ranking", "Data source", "Alerts"]
+    if "scanner_panel" not in st.session_state:
+        st.session_state["scanner_panel"] = (
+            "Top picks" if has_results else "Data source"
+        )
+    # If user was on results panels but data disappeared, fall back
+    if not has_results and st.session_state.get("scanner_panel") in (
+        "Top picks", "Full ranking", "Alerts",
+    ):
+        st.session_state["scanner_panel"] = "Data source"
+
+    panel = st.radio(
+        "Screener section",
+        options=panels,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="scanner_panel",
+        help="Switch focus — only one section is shown at a time.",
+    )
+    st.divider()
+
+    # ---- Shared KPI strip when we have data (except pure data-source empty state) ----
+    if has_results and panel != "Data source":
+        _scanner_summary_metrics(scan_df, prog)
+        _scanner_status_line(prog, scan_df)
+        st.divider()
+
+    if panel == "Data source":
+        _render_scanner_data_source(stocks, prog, pre, scan_failures)
+        if not has_results:
+            st.info(
+                "No scores yet. Load **offline rankings** or **Start live scan**, "
+                "then open **Top picks**."
+            )
+        return
+
+    if not has_results:
+        st.warning(
+            "No scored results in this session. Switch to **Data source** to load "
+            "or scan."
+        )
+        return
+
+    if panel == "Top picks":
+        _render_scanner_top_picks(scan_df, symbol, signal)
+    elif panel == "Full ranking":
+        _render_scanner_full_table(scan_df, prog)
+    elif panel == "Alerts":
+        _render_alerts_panel(scan_df, asof=prog.get("asof"))
 
 
 def render_plan_tab(ctx):
