@@ -40,10 +40,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
-          # Full history not required; token for push is GITHUB_TOKEN
-          fetch-depth: 1
+          # Need enough history for a clean rebase onto latest main
+          fetch-depth: 0
+          # Always tip of default branch so long jobs can still re-sync
+          ref: main
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -93,12 +95,59 @@ jobs:
               print(f"rankings_latest.csv rows: {lines}")
           PY
 
+      # Custom push instead of git-auto-commit-action@v5:
+      # 1) avoids Node 20 deprecation on that action
+      # 2) rebases onto latest main (long precompute often races other pushes)
       - name: Commit and push rankings
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore: nightly screener rankings [skip ci]"
-          file_pattern: rankings/*
-          commit_user_name: github-actions[bot]
-          commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
-          # Only create a commit when rankings actually change
-          skip_dirty_check: false
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ ! -f rankings/rankings_latest.csv ] || [ ! -f rankings/rankings_meta.json ]; then
+            echo "Rankings outputs missing — nothing to commit"
+            exit 1
+          fi
+
+          # Stage-only probe against the workspace we just produced
+          git add rankings/rankings_latest.csv rankings/rankings_meta.json
+          if git diff --cached --quiet; then
+            echo "Rankings unchanged vs current HEAD — skip commit"
+            exit 0
+          fi
+
+          # Keep generated files outside git while we re-sync to origin/main
+          STAGE_DIR="$(mktemp -d)"
+          cp rankings/rankings_latest.csv rankings/rankings_meta.json "$STAGE_DIR/"
+
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt ${attempt}/5"
+            git fetch origin main
+            git checkout -B main origin/main
+
+            mkdir -p rankings
+            cp "$STAGE_DIR/rankings_latest.csv" rankings/rankings_latest.csv
+            cp "$STAGE_DIR/rankings_meta.json" rankings/rankings_meta.json
+
+            git add rankings/rankings_latest.csv rankings/rankings_meta.json
+            if git diff --cached --quiet; then
+              echo "Rankings identical to origin/main — nothing to push"
+              exit 0
+            fi
+
+            git commit -m "chore: nightly screener rankings [skip ci]"
+
+            if git push origin HEAD:main; then
+              echo "Pushed rankings to main"
+              exit 0
+            fi
+
+            echo "Push rejected (non-fast-forward). Retrying…"
+            # Drop the local commit; next loop re-checkouts origin/main
+            git reset --hard origin/main
+            sleep $((attempt * 3))
+          done
+
+          echo "Failed to push rankings after 5 attempts"
+          exit 1

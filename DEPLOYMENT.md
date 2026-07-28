@@ -72,6 +72,9 @@ Workflow: `.github/workflows/nightly-rankings.yml`
 - Writes/commits `rankings/rankings_latest.csv` + `rankings_meta.json`
 - Uses `requirements-rankings.txt` (lighter than full UI deps)
 - Commit message includes `[skip ci]`; CI also ignores `rankings/**` paths
+- **Push safety:** after a long precompute, the job re-fetches `origin/main`
+  and retries the rankings commit (avoids non-fast-forward when someone else
+  pushed during the run)
 
 Streamlit Cloud redeploys when `main` updates, so the Screener picks up fresh
 precomputed results after each successful nightly run.
