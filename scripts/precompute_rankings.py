@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 from pathlib import Path
 
@@ -114,12 +115,36 @@ def main():
         on_batch=on_batch,
     )
     meta["watchlist"] = path.name
+    # Annotate CI / local runner for the app "as of" diagnostics
+    if os.environ.get("GITHUB_ACTIONS"):
+        meta["runner"] = "github-actions"
+        meta["run_id"] = os.environ.get("GITHUB_RUN_ID")
+        meta["run_url"] = (
+            f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/"
+            f"{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/"
+            f"{os.environ.get('GITHUB_RUN_ID', '')}"
+        )
+        meta["workflow"] = os.environ.get("GITHUB_WORKFLOW")
+    else:
+        meta["runner"] = "local"
+
+    # Soft quality gate: fail CI if almost nothing scored (bad Yahoo day / models missing)
+    min_ok = max(10, int(0.05 * (meta.get("n_requested") or len(items))))
+    if meta.get("n_scored", 0) < min_ok:
+        sys.exit(
+            f"Too few scored rows ({meta.get('n_scored')} < {min_ok}). "
+            "Check yfinance rate limits and global_models/ artifacts."
+        )
+
     csv_path, meta_path = save_rankings(df, failures, meta, directory=args.out)
 
     print(f"\nDone in {meta['elapsed_s']}s")
     print(f"  scored={meta['n_scored']}  failed={meta['n_failed']}  engine={meta['engine']}")
+    print(f"  runner={meta.get('runner')}")
     print(f"  wrote {csv_path}")
     print(f"  wrote {meta_path}")
+    if meta.get("run_url"):
+        print(f"  run={meta['run_url']}")
     print("Commit or sync the rankings/ folder for instant app loads.")
     return 0
 

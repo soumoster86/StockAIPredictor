@@ -547,12 +547,14 @@ stocks.csv
 
 The stock picker loads the **full** universe. The Screener supports:
 
-1. **Precomputed rankings** — run offline, load instantly in the app:
-   ```bash
-   python scripts/precompute_rankings.py
-   ```
-   Writes `rankings/rankings_latest.csv` (+ meta). Commit or sync that folder
-   for Streamlit Cloud.
+1. **Precomputed rankings** — load instantly in the app:
+   - **Autopilot (recommended):** GitHub Action `Nightly rankings` runs
+     Mon–Fri 18:00 UTC and commits `rankings/` to `main`.
+   - **Manual:** Actions tab → *Nightly rankings* → *Run workflow*, or locally:
+     ```bash
+     python scripts/precompute_rankings.py
+     ```
+   Writes `rankings/rankings_latest.csv` (+ meta) for Streamlit Cloud.
 2. **Live batches** — walk the list in chunks of **80** (Scan next batch).
 
 Upload a CSV to replace the watchlist for a session.

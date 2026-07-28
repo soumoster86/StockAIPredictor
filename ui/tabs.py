@@ -384,14 +384,19 @@ def render_scanner_tab(ctx):
                     st.warning("Could not load precomputed file.")
         with pc2:
             st.caption(
-                "Regenerate offline:  \n"
-                "`python scripts/precompute_rankings.py`"
+                "Regenerate:  \n"
+                "`python scripts/precompute_rankings.py`  \n"
+                "or **Actions → Nightly rankings → Run workflow**"
             )
+        meta = pre.get("meta") or {}
+        if meta.get("runner") == "github-actions" and meta.get("run_url"):
+            st.caption(f"Last CI run: {meta.get('run_url')}")
     else:
         st.info(
             "No precomputed rankings found (or none match this watchlist). "
-            "Run offline: `python scripts/precompute_rankings.py` then restart "
-            "the app — or use **live batch scan** below."
+            "Run offline: `python scripts/precompute_rankings.py`, or trigger "
+            "**GitHub Actions → Nightly rankings**, then redeploy/restart — "
+            "or use **live batch scan** below."
         )
 
     with st.expander("How Buy Score is calculated", expanded=False):

@@ -1,0 +1,104 @@
+# Nightly (weekday) full-universe screener rankings → rankings/
+# Also runnable manually from the Actions tab (workflow_dispatch).
+#
+# After each successful run the rankings CSV + meta are committed to main
+# so Streamlit Cloud can load instant "Best to buy" results.
+
+name: Nightly rankings
+
+on:
+  schedule:
+    # 18:00 UTC Mon–Fri ≈ after NSE close + data settle
+    - cron: "0 18 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      max_symbols:
+        description: "Cap symbols (leave empty for full universe)"
+        required: false
+        default: ""
+      batch_size:
+        description: "Batch size for Yahoo downloads"
+        required: false
+        default: "80"
+      pause:
+        description: "Seconds to pause between batches"
+        required: false
+        default: "0.5"
+
+concurrency:
+  group: nightly-rankings
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  precompute:
+    name: Precompute rankings
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history not required; token for push is GITHUB_TOKEN
+          fetch-depth: 1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-rankings.txt
+
+      - name: Install ranking dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-rankings.txt
+
+      - name: Verify global models present
+        run: |
+          python scripts/check_models.py
+
+      - name: Precompute rankings
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+          GITHUB_ACTIONS: "true"
+          MAX_SYMBOLS: ${{ github.event.inputs.max_symbols }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || '80' }}
+          PAUSE: ${{ github.event.inputs.pause || '0.5' }}
+        run: |
+          set -euo pipefail
+          ARGS=(--stocks stocks_universe.csv --batch-size "${BATCH_SIZE}" --pause "${PAUSE}")
+          if [ -n "${MAX_SYMBOLS:-}" ]; then
+            ARGS+=(--max "${MAX_SYMBOLS}")
+            echo "Capped run: max=${MAX_SYMBOLS}"
+          else
+            echo "Full-universe run"
+          fi
+          python scripts/precompute_rankings.py "${ARGS[@]}"
+
+      - name: Show rankings summary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          meta = Path("rankings/rankings_meta.json")
+          csv = Path("rankings/rankings_latest.csv")
+          if meta.exists():
+              print(json.dumps(json.loads(meta.read_text()), indent=2)[:2000])
+          if csv.exists():
+              lines = sum(1 for _ in csv.open(encoding="utf-8")) - 1
+              print(f"rankings_latest.csv rows: {lines}")
+          PY
+
+      - name: Commit and push rankings
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: nightly screener rankings [skip ci]"
+          file_pattern: rankings/*
+          commit_user_name: github-actions[bot]
+          commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
+          # Only create a commit when rankings actually change
+          skip_dirty_check: false

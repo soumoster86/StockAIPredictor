@@ -62,6 +62,22 @@ Click Deploy. The first build takes several minutes (torch). Then check:
   - For permanence, enable **Supabase** (see below). Download CSV from the
     Journal tab as a backup either way.
 
+### Nightly rankings (autopilot)
+
+Workflow: `.github/workflows/nightly-rankings.yml`
+
+- **Schedule:** weekdays 18:00 UTC (after NSE close)
+- **Manual:** GitHub → Actions → *Nightly rankings* → *Run workflow*
+- Writes/commits `rankings/rankings_latest.csv` + `rankings_meta.json`
+- Uses `requirements-rankings.txt` (lighter than full UI deps)
+- Commit message includes `[skip ci]`; CI also ignores `rankings/**` paths
+
+Streamlit Cloud redeploys when `main` updates, so the Screener picks up fresh
+precomputed results after each successful nightly run.
+
+If the job fails often (Yahoo rate limits), increase `pause` in the workflow
+dispatch inputs (e.g. `0.8`) or lower batch size.
+
 ### Optional: Supabase journal (survives redeploys)
 
 1. Create a free project at https://supabase.com
