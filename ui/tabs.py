@@ -704,6 +704,23 @@ def _scanner_status_line(prog, scan_df):
         )
 
 
+def _request_scanner_panel(panel: str) -> None:
+    """Queue a screener sub-panel switch for the *next* run.
+
+    Never assign ``st.session_state["scanner_panel"]`` after the radio widget
+    with that key has been created in the same run — Streamlit raises
+    StreamlitAPIException. Apply via ``_apply_scanner_panel_goto`` before the radio.
+    """
+    st.session_state["scanner_panel_goto"] = panel
+
+
+def _apply_scanner_panel_goto(panels: list[str]) -> None:
+    """Apply pending panel switch before the scanner_panel radio is created."""
+    goto = st.session_state.pop("scanner_panel_goto", None)
+    if goto in panels:
+        st.session_state["scanner_panel"] = goto
+
+
 def _render_scanner_data_source(stocks, prog, pre, scan_failures):
     """Section: load precomputed rankings + live batch controls."""
     section_header("Data source")
@@ -736,7 +753,7 @@ def _render_scanner_data_source(stocks, prog, pre, scan_failures):
                 if seed_session_from_precomputed(
                     stocks, allow_stale=True, load_mode="manual",
                 ):
-                    st.session_state["scanner_panel"] = "Top picks"
+                    _request_scanner_panel("Top picks")
                     st.toast("Manual load · precomputed rankings", icon="⚡")
                     st.rerun()
                 else:
@@ -793,7 +810,7 @@ def _render_scanner_data_source(stocks, prog, pre, scan_failures):
         ):
             reset_scan_session(stocks)
             _run_scan_with_progress(stocks, n_batches=1)
-            st.session_state["scanner_panel"] = "Top picks"
+            _request_scanner_panel("Top picks")
             st.rerun()
     with b2:
         next_n = min(SCAN_BATCH, prog["remaining"]) if prog["remaining"] else SCAN_BATCH
@@ -1109,6 +1126,8 @@ def render_scanner_tab(ctx):
 
     # ---- Sub-navigation (one focus at a time) ----
     panels = ["Top picks", "Full ranking", "Data source", "Alerts"]
+    # Must run *before* the radio (widget key "scanner_panel") is created
+    _apply_scanner_panel_goto(panels)
     if "scanner_panel" not in st.session_state:
         st.session_state["scanner_panel"] = (
             "Top picks" if has_results else "Data source"
