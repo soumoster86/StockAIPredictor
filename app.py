@@ -37,7 +37,8 @@ st.set_page_config(
     page_title="AI Stock Trend Predictor",
     page_icon=str(Path(__file__).parent / "src" / "icon_256.png"),
     layout="wide",
-    initial_sidebar_state="expanded",
+    # Collapsed by default so mobile focuses on the main stock picker
+    initial_sidebar_state="collapsed",
 )
 
 inject_global_css()

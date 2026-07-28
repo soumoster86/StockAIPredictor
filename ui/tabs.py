@@ -33,9 +33,11 @@ from report import (
     report_to_pdf_bytes,
 )
 from ui.help_text import HELP
+from ui.sectors import classify_sector, enrich_with_sector
 from ui.services import (
     SCAN_BATCH,
     advance_scan_session,
+    batch_progress_label,
     ensure_scan_session,
     get_data,
     get_horizons,
@@ -459,6 +461,144 @@ def _render_alerts_panel(scan_df, asof=None):
         )
 
 
+def _run_scan_with_progress(stocks, n_batches: int = 1) -> None:
+    """Live scan with Batch N of M progress UI."""
+    labels = batch_progress_label(stocks, n_batches)
+    run_n = max(1, labels["run_n"])
+    total_batches = labels["total_batches"]
+    start = labels["next_batch"]
+    end = min(start + run_n - 1, total_batches)
+
+    status = st.status(
+        f"Scanning batch {start} of {total_batches}…",
+        expanded=True,
+    )
+    bar = st.progress(0.0, text=f"Batch {start} of {total_batches}")
+
+    def _cb(done_i, run_n_, batch_no, total_b, offset, total_sym):
+        # done_i is 0..run_n (pre/post); clamp for bar
+        frac = min(max(done_i / max(run_n_, 1), 0.0), 1.0)
+        label = (
+            f"Batch {batch_no} of {total_b} · "
+            f"{offset:,}/{total_sym:,} symbols"
+        )
+        bar.progress(frac, text=label)
+        status.update(label=f"Scanning · {label}", state="running")
+
+    with status:
+        st.write(
+            f"Live Yahoo walk · batches **{start}–{end}** of **{total_batches}** "
+            f"(~{SCAN_BATCH} names each)"
+        )
+        advance_scan_session(
+            stocks, n_batches=run_n, progress_callback=_cb,
+        )
+        status.update(
+            label=f"Done · batch {end} of {total_batches}",
+            state="complete",
+        )
+        bar.progress(1.0, text=f"Finished through batch {end} of {total_batches}")
+
+
+def _sort_scan_df(df: pd.DataFrame, sort_by: str, ascending: bool) -> pd.DataFrame:
+    """Sort scored results by a user-chosen column."""
+    if df is None or df.empty:
+        return df
+    col_map = {
+        "Buy Score": "Buy Score",
+        "Probability Up": "Probability Up",
+        "Risk": "Risk",
+        "Reward Risk": "Reward Risk",
+        "Day": "Day",
+        "Name": "Name",
+        "Symbol": "Symbol",
+        "Price": "Price",
+        "Sector": "Sector",
+    }
+    col = col_map.get(sort_by, "Buy Score")
+    if col not in df.columns:
+        return df
+    out = df.sort_values(col, ascending=ascending, na_position="last")
+    return out.reset_index(drop=True)
+
+
+def _render_sticky_filters(display_name: str, *, key_prefix: str = "scr") -> dict:
+    """Always-visible sticky filter bar (session-persistent keys)."""
+    my_sector = classify_sector(display_name)
+    st.markdown(
+        '<div class="scr-sticky-filters">'
+        '<div class="scr-sticky-title">Filters · sticky</div>',
+        unsafe_allow_html=True,
+    )
+    r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+    min_prob = r1c1.slider(
+        "Min probability", 0.50, 0.80, 0.55, 0.01,
+        help="Only BUY screens at or above this model probability.",
+        key=f"{key_prefix}_min_prob",
+    )
+    max_risk = r1c2.slider(
+        "Max risk score", 3.0, 10.0, 8.0, 0.5,
+        help="Drop names riskier than this (1 calm → 10 wild).",
+        key=f"{key_prefix}_max_risk",
+    )
+    top_n = r1c3.slider(
+        "Show top N", 3, 20, 8, 1, key=f"{key_prefix}_top_n",
+    )
+    require_edge = r1c4.checkbox(
+        "Require model edge",
+        value=True,
+        help="Keep only names where test accuracy ≥ majority baseline.",
+        key=f"{key_prefix}_require_edge",
+    )
+
+    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+    only_sector = r2c1.checkbox(
+        f"Only my sector ({my_sector})",
+        value=False,
+        help=(
+            f"Keep names tagged **{my_sector}** (from the selected stock’s name). "
+            "Heuristic tags — not official GICS industries."
+        ),
+        key=f"{key_prefix}_only_sector",
+    )
+    sort_by = r2c2.selectbox(
+        "Sort by",
+        [
+            "Buy Score", "Probability Up", "Risk", "Reward Risk",
+            "Day", "Price", "Name", "Symbol", "Sector",
+        ],
+        index=0,
+        key=f"{key_prefix}_sort_by",
+    )
+    sort_asc = r2c3.selectbox(
+        "Order",
+        ["High → low", "Low → high"],
+        index=0,
+        key=f"{key_prefix}_sort_order",
+    )
+    r2c4.caption(f"Your sector · **{my_sector}**")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    return {
+        "min_prob": min_prob,
+        "max_risk": max_risk,
+        "top_n": top_n,
+        "require_edge": require_edge,
+        "only_sector": only_sector,
+        "my_sector": my_sector,
+        "sort_by": sort_by,
+        "sort_asc": sort_asc == "Low → high",
+    }
+
+
+def _apply_sector_filter(df: pd.DataFrame, only_sector: bool, my_sector: str) -> pd.DataFrame:
+    if df is None or df.empty or not only_sector:
+        return df
+    if "Sector" not in df.columns:
+        df = enrich_with_sector(df)
+    return df[df["Sector"] == my_sector].reset_index(drop=True)
+
+
 def _render_buy_pick_card(rank, row, key_prefix, on_jump):
     """One top-pick card with jump-to-stock button (rich inline card)."""
     name = row["Name"]
@@ -469,11 +609,13 @@ def _render_buy_pick_card(rank, row, key_prefix, on_jump):
     rr = row.get("Reward Risk")
     day = row.get("Day")
     price = row.get("Price")
+    sector = row.get("Sector")
 
     day_s = f"{float(day) * 100:+.1f}%" if day is not None and pd.notna(day) else "—"
     rr_s = f"1:{float(rr):.1f}" if rr is not None and pd.notna(rr) else "—"
     risk_s = f"{float(risk):.1f}" if risk is not None and pd.notna(risk) else "—"
     price_s = f"{float(price):,.2f}" if price is not None and pd.notna(price) else "—"
+    sector_s = str(sector) if sector is not None and pd.notna(sector) else None
 
     st.markdown(
         pick_card_html(
@@ -486,11 +628,12 @@ def _render_buy_pick_card(rank, row, key_prefix, on_jump):
             day_s=day_s,
             risk_s=risk_s,
             rr_s=rr_s,
+            sector=sector_s,
         ),
         unsafe_allow_html=True,
     )
     st.button(
-        f"Open analysis · {sym}",
+        f"Open full Signal · {sym}",
         key=f"{key_prefix}_{rank}_{sym}",
         use_container_width=True,
         type="secondary",
@@ -624,8 +767,7 @@ def _render_scanner_data_source(stocks, prog, pre, scan_failures):
             help=HELP["scanner"], key="scr_start_scan",
         ):
             reset_scan_session(stocks)
-            with st.spinner(f"Scanning first batch of {SCAN_BATCH}…"):
-                advance_scan_session(stocks, n_batches=1)
+            _run_scan_with_progress(stocks, n_batches=1)
             st.session_state["scanner_panel"] = "Top picks"
             st.rerun()
     with b2:
@@ -635,15 +777,19 @@ def _render_scanner_data_source(stocks, prog, pre, scan_failures):
             or prog["complete"]
             or prog["total"] == 0
         )
+        bl = batch_progress_label(stocks, 1)
+        next_label = (
+            f"Next · batch {bl['next_batch']}/{bl['total_batches']}"
+            if prog["remaining"] else "Scan complete"
+        )
         if st.button(
-            f"Scan next ({next_n})" if prog["remaining"] else "Scan complete",
+            next_label if prog["remaining"] else "Scan complete",
             use_container_width=True,
             disabled=next_disabled,
             help="Continue through the universe without losing prior results.",
             key="scr_next_batch",
         ):
-            with st.spinner(f"Scanning next {SCAN_BATCH}…"):
-                advance_scan_session(stocks, n_batches=1)
+            _run_scan_with_progress(stocks, n_batches=1)
             st.rerun()
     with b3:
         multi = min(3, max(1, (prog["remaining"] + SCAN_BATCH - 1) // SCAN_BATCH))
@@ -652,15 +798,20 @@ def _render_scanner_data_source(stocks, prog, pre, scan_failures):
             or prog["complete"]
             or prog["total"] == 0
         )
+        blm = batch_progress_label(stocks, multi)
+        multi_label = (
+            f"+{multi} · to batch "
+            f"{min(blm['next_batch'] + multi - 1, blm['total_batches'])}/"
+            f"{blm['total_batches']}"
+        )
         if st.button(
-            f"+{multi} batches",
+            multi_label if prog["remaining"] else f"+{multi} batches",
             use_container_width=True,
             disabled=multi_disabled,
-            help="Run up to 3 batches in a row.",
+            help="Run up to 3 batches in a row with live Batch N of M progress.",
             key="scr_multi_batch",
         ):
-            with st.spinner(f"Scanning up to {multi} batches…"):
-                advance_scan_session(stocks, n_batches=multi)
+            _run_scan_with_progress(stocks, n_batches=multi)
             st.rerun()
     with b4:
         if st.button("Reset", use_container_width=True, key="scr_reset_scan"):
@@ -668,10 +819,18 @@ def _render_scanner_data_source(stocks, prog, pre, scan_failures):
             st.rerun()
 
     engine = "global model" if global_model_available() else "fast per-stock tree"
-    st.caption(
-        f"Engine: **{engine}** · batch size **{SCAN_BATCH}** · "
-        f"watchlist **{prog['total']}** names"
-    )
+    bl_now = batch_progress_label(stocks, 1)
+    if prog.get("source") == "precomputed":
+        st.caption(
+            f"Engine: **{engine}** · offline rankings · watchlist **{prog['total']}**"
+        )
+    else:
+        st.caption(
+            f"Engine: **{engine}** · batch size **{SCAN_BATCH}** · "
+            f"progress **batch {min(bl_now['next_batch'], bl_now['total_batches'])} "
+            f"of {bl_now['total_batches']}** · "
+            f"{prog['attempted']}/{prog['total']} symbols"
+        )
 
     if scan_failures:
         with st.expander(f"{len(scan_failures)} stock(s) skipped", expanded=False):
@@ -681,15 +840,23 @@ def _render_scanner_data_source(stocks, prog, pre, scan_failures):
                 st.caption(f"…and {len(scan_failures) - 100} more")
 
 
-def _render_scanner_top_picks(scan_df, symbol, signal):
-    """Section: filters + pick cards (primary user focus)."""
+def _render_scanner_top_picks(scan_df, symbol, signal, display_name):
+    """Section: sticky filters + pick cards (primary user focus)."""
     section_header("Top picks")
     st.caption(
-        "Best long **screen** candidates by Buy Score. "
-        "Open full analysis before any decision — educational only."
+        "Best long **screen** candidates. Each card is a **Screen** call — "
+        "open full analysis for the real Signal. Educational only."
     )
 
-    current_screen = scan_df[scan_df["Symbol"] == symbol] if "Symbol" in scan_df else scan_df.iloc[0:0]
+    filters = _render_sticky_filters(display_name, key_prefix="scr")
+    scan_df = enrich_with_sector(scan_df)
+    pool = _apply_sector_filter(
+        scan_df, filters["only_sector"], filters["my_sector"],
+    )
+
+    current_screen = (
+        pool[pool["Symbol"] == symbol] if "Symbol" in pool.columns else pool.iloc[0:0]
+    )
     if not current_screen.empty:
         screen_call = current_screen.iloc[0]["Screen"]
         if screen_call != signal:
@@ -698,39 +865,31 @@ def _render_scanner_top_picks(scan_df, symbol, signal):
                 f"**{signal}** — prefer the full Signal for the selected stock."
             )
 
-    with st.expander("Filters", expanded=True):
-        f1, f2, f3, f4 = st.columns(4)
-        min_prob = f1.slider(
-            "Min probability", 0.50, 0.80, 0.55, 0.01,
-            help="Only BUY screens at or above this model probability.",
-            key="scr_min_prob",
-        )
-        max_risk = f2.slider(
-            "Max risk score", 3.0, 10.0, 8.0, 0.5,
-            help="Drop names riskier than this (1 calm → 10 wild).",
-            key="scr_max_risk",
-        )
-        top_n = f3.slider("Show top N", 3, 20, 8, 1, key="scr_top_n")
-        require_edge = f4.checkbox(
-            "Require model edge",
-            value=True,
-            help="Keep only names where test accuracy ≥ majority baseline.",
-            key="scr_require_edge",
-        )
-
+    # rank_buy_candidates sorts by Buy Score; we re-sort after if user picked another col
     picks = rank_buy_candidates(
-        scan_df,
-        min_prob=min_prob,
-        max_risk=max_risk,
-        require_edge=require_edge,
-        top_n=top_n,
+        pool,
+        min_prob=filters["min_prob"],
+        max_risk=filters["max_risk"],
+        require_edge=filters["require_edge"],
+        top_n=None if filters["sort_by"] != "Buy Score" else filters["top_n"],
     )
+    if not picks.empty:
+        # If sorting by non-score, re-rank from full filtered BUY pool
+        if filters["sort_by"] != "Buy Score" or filters["sort_asc"]:
+            picks = _sort_scan_df(picks, filters["sort_by"], filters["sort_asc"])
+            picks = picks.head(int(filters["top_n"])).reset_index(drop=True)
+            if "Rank" in picks.columns:
+                picks = picks.drop(columns=["Rank"])
+            picks.insert(0, "Rank", range(1, len(picks) + 1))
+        elif filters["sort_by"] == "Buy Score" and not filters["sort_asc"]:
+            picks = picks.head(int(filters["top_n"])).reset_index(drop=True)
 
     if picks.empty:
-        st.info(
-            "No names pass these filters. Loosen probability / risk, or turn off "
-            "model edge. An empty shortlist is useful information."
-        )
+        msg = "No names pass these filters."
+        if filters["only_sector"]:
+            msg += f" Sector filter is on (**{filters['my_sector']}**)."
+        msg += " Loosen probability / risk, or turn off model edge."
+        st.info(msg)
     else:
         def _jump_to(stock_name):
             from ui.stock_picker import set_stock_pick
@@ -743,15 +902,23 @@ def _render_scanner_top_picks(scan_df, symbol, signal):
                     row.get("Rank", i + 1), row,
                     key_prefix="pick", on_jump=_jump_to,
                 )
+        order_note = (
+            f"{filters['sort_by']} "
+            f"({'↑' if filters['sort_asc'] else '↓'})"
+        )
+        sector_note = (
+            f" · sector **{filters['my_sector']}**"
+            if filters["only_sector"] else ""
+        )
         st.caption(
-            f"**{len(picks)}** candidate(s) · sorted by Buy Score · "
-            "tap **Open analysis** for the full Signal"
+            f"**{len(picks)}** candidate(s) · sorted by {order_note}{sector_note} · "
+            "each card: **Screen ≠ full Signal**"
         )
 
         with st.expander("Shortlist table", expanded=False):
             pick_view = picks[[
                 c for c in [
-                    "Rank", "Symbol", "Name", "Buy Score", "Probability Up",
+                    "Rank", "Symbol", "Name", "Sector", "Buy Score", "Probability Up",
                     "Screen", "Risk", "Reward Risk", "To Support", "Test Acc",
                     "Baseline", "Day", "Price",
                 ] if c in picks.columns
@@ -791,14 +958,25 @@ def _render_scanner_top_picks(scan_df, symbol, signal):
             | **Near support** | ~6% | Price sitting closer to a recent swing floor |
 
             Only **BUY** screen calls enter the shortlist (default entry ~0.55).
+            **Screen ≠ full Signal** — open the stock for tuned thresholds.
+            Sector tags are name heuristics for filtering, not official industries.
             """
         )
 
 
-def _render_scanner_full_table(scan_df, prog):
-    """Section: full watchlist ranking + CSV download."""
+def _render_scanner_full_table(scan_df, prog, display_name):
+    """Section: full watchlist ranking + sort + CSV download."""
     section_header("Full ranking")
-    st.caption("All scored names in this session. Screen only — not investment advice.")
+    st.caption(
+        "All scored names in this session. Click column headers in the table "
+        "or use Sort below. Screen only — not investment advice."
+    )
+
+    filters = _render_sticky_filters(display_name, key_prefix="scr")
+    scan_df = enrich_with_sector(scan_df)
+    pool = _apply_sector_filter(
+        scan_df, filters["only_sector"], filters["my_sector"],
+    )
 
     show_mode = st.radio(
         "Show",
@@ -806,18 +984,20 @@ def _render_scanner_full_table(scan_df, prog):
         horizontal=True,
         key="scr_table_filter",
     )
-    view_df = scan_df
-    if show_mode == "BUY only":
-        view_df = scan_df[scan_df["Screen"] == "BUY"]
-    elif show_mode == "SELL only":
-        view_df = scan_df[scan_df["Screen"] == "SELL"]
+    view_df = pool
+    if show_mode == "BUY only" and "Screen" in view_df.columns:
+        view_df = view_df[view_df["Screen"] == "BUY"]
+    elif show_mode == "SELL only" and "Screen" in view_df.columns:
+        view_df = view_df[view_df["Screen"] == "SELL"]
+
+    view_df = _sort_scan_df(view_df, filters["sort_by"], filters["sort_asc"])
 
     if view_df.empty:
         st.info("No rows for this filter.")
     else:
         display_cols = [
             c for c in [
-                "Symbol", "Name", "Buy Score", "Screen", "Probability Up",
+                "Symbol", "Name", "Sector", "Buy Score", "Screen", "Probability Up",
                 "Rating", "Risk", "Reward Risk", "To Support", "To Resistance",
                 "Test Acc", "Baseline", "Day", "Price", "Model",
             ] if c in view_df.columns
@@ -850,18 +1030,25 @@ def _render_scanner_full_table(scan_df, prog):
                 ),
             },
         )
+        st.caption(
+            f"Sorted by **{filters['sort_by']}** "
+            f"({'ascending' if filters['sort_asc'] else 'descending'}) · "
+            f"{len(view_df):,} rows"
+            + (f" · sector **{filters['my_sector']}**" if filters["only_sector"] else "")
+        )
 
     src = prog.get("source") or "live"
     dl1, dl2 = st.columns([2, 1])
     with dl1:
         st.caption(
             f"Source **{src}** · coverage **{prog['attempted']}/{prog['total']}** · "
-            "default thresholds"
+            "default thresholds · Screen ≠ full Signal"
         )
     with dl2:
+        export_df = enrich_with_sector(scan_df)
         st.download_button(
             "Download CSV",
-            scan_df.to_csv(index=False).encode(),
+            export_df.to_csv(index=False).encode(),
             file_name="screener_results.csv",
             mime="text/csv",
             use_container_width=True,
@@ -874,6 +1061,7 @@ def render_scanner_tab(ctx):
     stocks = ctx["stocks"]
     symbol = ctx["symbol"]
     signal = ctx["signal"]
+    display_name = ctx.get("display_name") or symbol
 
     ensure_scan_session(stocks)
     maybe_autoseed_precomputed(stocks)
@@ -938,9 +1126,9 @@ def render_scanner_tab(ctx):
         return
 
     if panel == "Top picks":
-        _render_scanner_top_picks(scan_df, symbol, signal)
+        _render_scanner_top_picks(scan_df, symbol, signal, display_name)
     elif panel == "Full ranking":
-        _render_scanner_full_table(scan_df, prog)
+        _render_scanner_full_table(scan_df, prog, display_name)
     elif panel == "Alerts":
         _render_alerts_panel(scan_df, asof=prog.get("asof"))
 

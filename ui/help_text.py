@@ -35,7 +35,7 @@ HELP = {
     "journal": "Backtests look backward; the journal looks forward. Each logged signal is later scored against real prices. Storage is per-user: local CSV by default, or Supabase when configured in secrets (survives Streamlit Cloud restarts).",
     "target_rate": "Of resolved BUY plans, the share that reached the target before hitting the stop.",
     "journal_status": "TARGET HIT / STOP HIT: which level the price touched first. EXPIRED: neither within 20 trading days — scored at that day's close. OPEN: still running.",
-    "scanner": "Screener panels: Top picks (shortlist), Full ranking (table), Data source (load offline or live scan), Alerts. Rankings use Buy Score. Screen only — open a stock for the full Signal. Not investment advice.",
+    "scanner": "Screener panels: Top picks, Full ranking, Data source, Alerts. Sticky filters include probability, risk, sector (from selected stock name), and sort. Live scan shows Batch N of M. Screen ≠ full Signal — open a stock for the real call. Not investment advice.",
     "buy_score": "0–100 composite for long candidates: ~50% model probability, ~20% accuracy vs baseline, ~12% lower risk, ~12% trade-plan R:R, ~6% proximity to support. Ranking aid only.",
     "scan_to_support": "How far the current price sits above its nearest support level. Small = near a floor that has held before; negative would mean below all detected supports.",
     "scan_to_resistance": "How far the nearest ceiling sits above the current price. Small = close to a level where rallies have stalled before.",

@@ -80,22 +80,34 @@ def render_sidebar_stock_picker(stocks: dict) -> None:
 
 
 def render_main_stock_picker(stocks: dict) -> tuple[str, str]:
-    """Market workspace stock selectbox. Returns (symbol, display_name)."""
+    """Market workspace stock selectbox. Returns (symbol, display_name).
+
+    Primary control on mobile (sidebar starts collapsed).
+    """
     options = stock_options(stocks)
     _init_pick(options)
 
     # Seed widget value *before* the selectbox is created
     st.session_state[MAIN_KEY] = st.session_state[PICK_KEY]
 
-    st.markdown("**Select stock**")
-    col_pick, col_meta = st.columns([2.4, 1.2], gap="medium")
+    st.markdown(
+        """
+<div class="sp-stock-primary">
+  <div style="font-size:0.72rem;font-weight:700;letter-spacing:0.06em;
+              text-transform:uppercase;color:rgba(232,236,241,0.45);
+              margin-bottom:0.35rem;">Select stock</div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    col_pick, col_meta = st.columns([2.6, 1.0], gap="medium")
     with col_pick:
         st.selectbox(
             "Select stock",
             options=options,
             key=MAIN_KEY,
             on_change=_on_main_change,
-            help="Type to search the full watchlist. Synced with the sidebar.",
+            help="Primary stock picker (type to search). Model settings are in the sidebar.",
             label_visibility="collapsed",
         )
     with col_meta:
@@ -103,7 +115,7 @@ def render_main_stock_picker(stocks: dict) -> tuple[str, str]:
         if choice and choice != CUSTOM_LABEL and choice in stocks:
             st.caption(f"Yahoo · `{stocks[choice]}`")
         else:
-            st.caption("Or pick **Custom symbol…**")
+            st.caption("Or **Custom symbol…**")
 
     if st.session_state.get(PICK_KEY) == CUSTOM_LABEL:
         st.text_input(
@@ -111,6 +123,11 @@ def render_main_stock_picker(stocks: dict) -> tuple[str, str]:
             key=CUSTOM_KEY,
             placeholder="e.g. TATAPOWER.NS or AAPL",
             help="NSE tickers end in .NS. Any Yahoo Finance symbol works.",
+        )
+    else:
+        st.caption(
+            "Tip · open the **sidebar** (←) for model / watchlist settings · "
+            "stock pick stays here on mobile"
         )
 
     return resolve_selection(stocks)

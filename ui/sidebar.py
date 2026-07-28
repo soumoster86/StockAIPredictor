@@ -9,6 +9,7 @@ from ui.services import (
     STOCKS_FILE,
     STOCKS_UNIVERSE_FILE,
     advance_scan_session,
+    batch_progress_label,
     ensure_scan_session,
     get_scan_results,
     load_stock_list,
@@ -125,13 +126,23 @@ def render_sidebar():
                 ):
                     seed_session_from_precomputed(stocks, allow_stale=True)
                     st.rerun()
+            bl = batch_progress_label(stocks, 1)
+            scan_btn = (
+                f"Live batch {bl['next_batch']}/{bl['total_batches']}"
+                if sp.get("source") != "precomputed" and sp["total"]
+                else f"Live batch ({SCAN_BATCH})"
+            )
             if st.button(
-                f"Live batch ({SCAN_BATCH})", key="sidebar_scan",
+                scan_btn, key="sidebar_scan",
                 use_container_width=True, type="primary", help=HELP["scanner"],
             ):
                 if sp.get("source") == "precomputed" or sp["attempted"] == 0:
                     reset_scan_session(stocks)
-                advance_scan_session(stocks, n_batches=1)
+                with st.spinner(
+                    f"Batch {batch_progress_label(stocks, 1)['next_batch']} of "
+                    f"{batch_progress_label(stocks, 1)['total_batches']}…"
+                ):
+                    advance_scan_session(stocks, n_batches=1)
                 st.rerun()
 
             if sp["attempted"] == 0 and sp.get("source") != "precomputed":

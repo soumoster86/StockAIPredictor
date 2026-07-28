@@ -218,8 +218,41 @@ def run_scan(stock_items):
     return df, failures
 
 
-def advance_scan_session(stocks: dict, n_batches: int = 1) -> dict:
-    """Run 1..n batches and merge into session. Returns progress dict."""
+def batch_progress_label(stocks: dict, batches_to_run: int = 1) -> dict:
+    """Human-readable batch counters for loading UI (Batch N of M)."""
+    prog = scan_progress(stocks)
+    total = max(int(prog.get("total") or 0), 1)
+    offset = int(prog.get("offset") or 0)
+    batch_size = max(int(prog.get("batch_size") or SCAN_BATCH), 1)
+    total_batches = max((total + batch_size - 1) // batch_size, 1)
+    # Next batch index is 1-based from current offset
+    next_batch = min((offset // batch_size) + 1, total_batches)
+    remaining_batches = max(
+        (max(total - offset, 0) + batch_size - 1) // batch_size, 0,
+    )
+    run_n = max(1, min(int(batches_to_run), remaining_batches or 1))
+    return {
+        "next_batch": next_batch,
+        "total_batches": total_batches,
+        "run_n": run_n,
+        "remaining_batches": remaining_batches,
+        "batch_size": batch_size,
+        "offset": offset,
+        "total": total,
+    }
+
+
+def advance_scan_session(
+    stocks: dict,
+    n_batches: int = 1,
+    *,
+    progress_callback=None,
+) -> dict:
+    """Run 1..n batches and merge into session. Returns progress dict.
+
+    Optional progress_callback(done_i, run_n, batch_no, total_batches, next_offset, total)
+    is invoked after each batch for live loading UI.
+    """
     ensure_scan_session(stocks)
     items = tuple(normalize_stock_items(list(stocks.items())))
     n_batches = max(1, min(int(n_batches), 10))
@@ -228,10 +261,23 @@ def advance_scan_session(stocks: dict, n_batches: int = 1) -> dict:
     st.session_state[SCAN_ASOF] = None
     st.session_state[SCAN_TOTAL] = len(items)
 
-    for _ in range(n_batches):
+    labels = batch_progress_label(stocks, n_batches)
+    run_n = labels["run_n"]
+    total_batches = labels["total_batches"]
+    start_batch = labels["next_batch"]
+
+    for i in range(run_n):
         offset = int(st.session_state.get(SCAN_OFFSET) or 0)
         if offset >= len(items):
             break
+        batch_no = start_batch + i
+        if progress_callback is not None:
+            try:
+                progress_callback(
+                    i, run_n, batch_no, total_batches, offset, len(items),
+                )
+            except Exception:
+                pass
         df, fails, next_offset, total, complete = run_scan_batch(
             items, offset=offset, batch_size=SCAN_BATCH,
         )
@@ -245,6 +291,13 @@ def advance_scan_session(stocks: dict, n_batches: int = 1) -> dict:
         st.session_state[SCAN_FAILS] = list(fail_map.items())
         st.session_state[SCAN_OFFSET] = next_offset
         st.session_state[SCAN_TOTAL] = total
+        if progress_callback is not None:
+            try:
+                progress_callback(
+                    i + 1, run_n, batch_no, total_batches, next_offset, total,
+                )
+            except Exception:
+                pass
         if complete:
             break
 
