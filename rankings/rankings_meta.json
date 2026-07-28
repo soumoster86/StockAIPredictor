@@ -1,13 +1,17 @@
 {
-  "generated_at": "2026-07-23T09:50:45Z",
-  "n_requested": 2367,
-  "n_scored": 2050,
-  "n_failed": 317,
+  "generated_at": "2026-07-28T15:39:26Z",
+  "n_requested": 100,
+  "n_scored": 84,
+  "n_failed": 16,
   "batch_size": 80,
   "engine": "global",
-  "elapsed_s": 756.5,
+  "elapsed_s": 26.2,
   "source": "precomputed",
   "watchlist": "stocks_universe.csv",
+  "runner": "github-actions",
+  "run_id": "30374291518",
+  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/30374291518",
+  "workflow": "Nightly rankings",
   "failures_sample": [
     {
       "symbol": "3BBLACKBIO.NS",
@@ -72,143 +76,7 @@
     {
       "symbol": "AKCAPIT.NS",
       "reason": "no/short data"
-    },
-    {
-      "symbol": "ALGOQUANT.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "ALLTIME.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "AMAGI.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "AMANTA.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "AMBALALSA.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "AMIRCHAND.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "ANTHEM.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "ANUHPHR.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "ARFIN.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "ARIS.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "ARSSBL.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "ASHIKA.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "ASTAR.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "ATHERENERG.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "ATLANTAELE.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "AYE.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BAJAJINDEF.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BAJAJST.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BATLIBOI.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BCPL.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BEEKAY.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BELLACASA.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BELRISE.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BENGALASM.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BHARATCOAL.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BHARATSE.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BI.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BIMETAL.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BIRLAPREC.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BLACKROSE.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BLIL.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BLUESTONE.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BLUSPRING.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BMWVENTLTD.NS",
-      "reason": "no/short data"
     }
   ],
-  "n_failures_listed": 50
+  "n_failures_listed": 16
 }
