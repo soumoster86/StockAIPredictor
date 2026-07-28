@@ -5,6 +5,8 @@ from journal import (
     LocalCSVBackend,
     SupabaseBackend,
     append_signal,
+    delete_signal,
+    entry_label,
     get_journal_config,
     journal_backend_info,
     journal_path_for,
@@ -31,6 +33,36 @@ def test_append_and_dedupe(tmp_path):
     assert append_signal(REC, p) is True
     assert append_signal(REC, p) is False
     assert len(load_journal(p)) == 1
+
+
+def test_delete_signal_removes_matching_rows(tmp_path):
+    p = tmp_path / "j.csv"
+    assert append_signal(REC, p) is True
+    other = {**REC, "symbol": "OTHER.NS", "signal_date": "2026-05-02"}
+    assert append_signal(other, p) is True
+    assert len(load_journal(p)) == 2
+
+    n = delete_signal(
+        [(REC["signal_date"], REC["symbol"], REC["model_type"])],
+        path=p,
+    )
+    assert n == 1
+    left = load_journal(p)
+    assert len(left) == 1
+    assert left.iloc[0]["symbol"] == "OTHER.NS"
+
+    # Deleting again is a no-op
+    assert delete_signal(
+        [(REC["signal_date"], REC["symbol"], REC["model_type"])],
+        path=p,
+    ) == 0
+
+
+def test_entry_label_includes_symbol_and_date():
+    lab = entry_label(REC)
+    assert "TEST.NS" in lab
+    assert "2026-05-01" in lab
+    assert "BUY" in lab
 
 
 def test_safe_username_and_per_user_paths(tmp_path, monkeypatch):

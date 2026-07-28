@@ -7,6 +7,8 @@ import streamlit as st
 from journal import (
     MAX_HOLD_DAYS,
     append_signal,
+    delete_signal,
+    entry_label,
     journal_backend_info,
     journal_path_for,
     load_journal,
@@ -1134,6 +1136,67 @@ def render_journal_tab(ctx):
             f"{MAX_HOLD_DAYS} trading days. Same-day double-touches score as STOP "
             f"(conservative). {store_note}."
         )
+
+        # ---- Remove logged signals ----
+        section_header("Remove logged signals")
+        st.caption(
+            "Select one or more entries to permanently delete from your journal. "
+            "This cannot be undone."
+        )
+        # Build stable label → key map (date, symbol, model_type)
+        label_to_key = {}
+        labels = []
+        for _, row in show.iterrows():
+            lab = entry_label(row)
+            # Disambiguate rare collisions
+            base = lab
+            n = 2
+            while lab in label_to_key:
+                lab = f"{base} ({n})"
+                n += 1
+            label_to_key[lab] = (
+                str(row["signal_date"]),
+                str(row["symbol"]),
+                str(row["model_type"]),
+            )
+            labels.append(lab)
+
+        selected = st.multiselect(
+            "Entries to remove",
+            options=labels,
+            default=[],
+            key="journal_delete_select",
+            help="Pick entries by date · symbol · signal · model.",
+        )
+        d1, d2 = st.columns([1, 2])
+        with d1:
+            confirm = st.checkbox(
+                "Confirm permanent delete",
+                value=False,
+                key="journal_delete_confirm",
+            )
+        with d2:
+            if st.button(
+                f"Delete {len(selected)} selected" if selected else "Delete selected",
+                type="primary",
+                disabled=not selected or not confirm,
+                use_container_width=True,
+            ):
+                keys = [label_to_key[lab] for lab in selected if lab in label_to_key]
+                try:
+                    n = delete_signal(keys, user=current_user)
+                except Exception as e:
+                    st.error(f"Delete failed: {e}")
+                    n = 0
+                if n > 0:
+                    st.toast(f"Removed {n} journal entr{'y' if n == 1 else 'ies'}", icon="🗑️")
+                    st.success(f"Removed **{n}** journal entry(ies).")
+                    st.session_state.pop("journal_delete_select", None)
+                    st.session_state.pop("journal_delete_confirm", None)
+                    st.rerun()
+                else:
+                    st.warning("No matching entries were removed.")
+
         st.download_button(
             "Download journal as CSV",
             resolved.to_csv(index=False).encode(),

@@ -8,10 +8,11 @@ Storage backends (configured via secrets / env):
   local     — journals/<user>.csv  (default; ephemeral on Streamlit Cloud)
   supabase  — hosted Postgres via PostgREST  (survives redeploys)
 
-Public API is unchanged for tests and the UI:
+Public API:
 
   load_journal(user=...) / load_journal(path=...)
   append_signal(record, user=...) / append_signal(record, path=...)
+  delete_signal(keys, user=...) / delete_signal(keys, path=...)
   resolve_entry / resolve_journal / scorecard
 """
 
@@ -154,6 +155,18 @@ def _record_row(record: dict) -> dict:
     return {c: record.get(c) for c in COLUMNS}
 
 
+def _entry_key(signal_date, symbol, model_type) -> tuple:
+    return (str(signal_date), str(symbol), str(model_type))
+
+
+def entry_label(row) -> str:
+    """Human-readable label for delete UI multiselect."""
+    return (
+        f"{row.get('signal_date', '')} · {row.get('symbol', '')} · "
+        f"{row.get('signal', '')} · {row.get('model_type', '')}"
+    )
+
+
 class LocalCSVBackend:
     name = "local"
 
@@ -187,6 +200,32 @@ class LocalCSVBackend:
         path.parent.mkdir(parents=True, exist_ok=True)
         out.to_csv(path, index=False)
         return True
+
+    def delete(self, keys, user=None, path=None) -> int:
+        """Remove rows matching (signal_date, symbol, model_type) keys.
+        Returns number of rows removed."""
+        path = Path(path) if path is not None else journal_path_for(user)
+        df = self.load(path=path)
+        if df.empty or not keys:
+            return 0
+        keyset = {_entry_key(*k) if not isinstance(k, dict) else _entry_key(
+            k["signal_date"], k["symbol"], k["model_type"]
+        ) for k in keys}
+        before = len(df)
+        mask = df.apply(
+            lambda r: _entry_key(r["signal_date"], r["symbol"], r["model_type"]) in keyset,
+            axis=1,
+        )
+        out = df.loc[~mask].reset_index(drop=True)
+        removed = before - len(out)
+        if removed <= 0:
+            return 0
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if out.empty:
+            # Keep empty file with headers for consistency
+            out = _empty_df()
+        out.to_csv(path, index=False)
+        return int(removed)
 
 
 class SupabaseBackend:
@@ -283,6 +322,42 @@ class SupabaseBackend:
         )
         return True
 
+    def delete(self, keys, user=None, path=None) -> int:
+        """Delete rows by (signal_date, symbol, model_type). Returns count deleted."""
+        if not keys:
+            return 0
+        username = safe_username(user) if user else "anonymous"
+        removed = 0
+        for k in keys:
+            if isinstance(k, dict):
+                sd, sym, mt = k["signal_date"], k["symbol"], k["model_type"]
+            else:
+                sd, sym, mt = k
+            # PostgREST AND filters
+            query = {
+                "username": f"eq.{username}",
+                "signal_date": f"eq.{sd}",
+                "symbol": f"eq.{sym}",
+                "model_type": f"eq.{mt}",
+            }
+            # Prefer return=representation to know how many were deleted
+            try:
+                result = self._request(
+                    "DELETE",
+                    self.table,
+                    query=query,
+                    prefer="return=representation",
+                )
+                if isinstance(result, list):
+                    removed += len(result)
+                else:
+                    removed += 1
+            except RuntimeError:
+                # Retry without representation
+                self._request("DELETE", self.table, query=query, prefer="return=minimal")
+                removed += 1
+        return int(removed)
+
 
 def get_backend():
     """Active backend instance for user-scoped operations."""
@@ -318,6 +393,22 @@ def append_signal(record, path=None, user=None):
     except RuntimeError:
         # Soft fallback to local if remote fails mid-session
         return LocalCSVBackend().append(record, user=user)
+
+
+def delete_signal(keys, path=None, user=None) -> int:
+    """Delete one or more journal entries.
+
+    `keys` is a list of (signal_date, symbol, model_type) tuples or dicts
+    with those fields. Returns number of rows removed.
+    """
+    if not keys:
+        return 0
+    if path is not None:
+        return LocalCSVBackend().delete(keys, path=path, user=user)
+    try:
+        return get_backend().delete(keys, user=user)
+    except RuntimeError:
+        return LocalCSVBackend().delete(keys, user=user)
 
 
 def resolve_entry(rec, prices, max_days=MAX_HOLD_DAYS):
