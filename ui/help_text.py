@@ -44,4 +44,6 @@ HELP = {
     "benchmark": "Generates hundreds of random strategies that hold for the same number of days as the model, then shows where the model ranks. Above the 90th percentile = a real edge; near the 50th = no better than luck; the bell curve shows the random crowd.",
     "global_model": "When trained, the global model is one model fitted on the pooled history of many stocks (time-ordered offline train) instead of ~1,200 rows for one name — usually steadier on short histories. Weights may include this stock; thresholds stay stock-specific. Prefer Walk-Forward for a stricter edge check.",
     "use_global": "A global model is available. Keep it on for pooled-data predictions, or untick to train a per-stock model on the fly and compare the two in the Walk-Forward tab. Global accuracy on this page is indicative, not fully out-of-sample.",
+    "report_download": "One-click CSV or PDF of this stock's signal, risk, trade plan, and hold-out metrics. For personal notes only — not a research report or recommendation.",
+    "alerts": "Optional Telegram/email when top BUY screens clear your min Buy Score filters. Configure [alerts] in Streamlit secrets. De-dupes per rankings snapshot so the same names are not spammed.",
 }

@@ -967,6 +967,8 @@ def rank_buy_candidates(scan_df, min_prob=0.55, max_risk=8.0,
         return buys
 
     buys = buys.sort_values("Buy Score", ascending=False).reset_index(drop=True)
+    if "Rank" in buys.columns:
+        buys = buys.drop(columns=["Rank"])
     buys.insert(0, "Rank", range(1, len(buys) + 1))
     if top_n is not None:
         buys = buys.head(int(top_n))

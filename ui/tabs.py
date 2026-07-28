@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from alerts import alerts_status, get_alerts_config, run_alerts, select_alert_candidates
 from journal import (
     MAX_HOLD_DAYS,
     append_signal,
@@ -23,6 +24,13 @@ from model import (
     random_signal_benchmark,
     rank_buy_candidates,
     rating_from_prob,
+)
+from report import (
+    HAS_REPORTLAB,
+    build_report_dict,
+    filename_stem,
+    report_to_csv_bytes,
+    report_to_pdf_bytes,
 )
 from ui.help_text import HELP
 from ui.services import (
@@ -57,6 +65,69 @@ from ui.theme import (
     plotly_layout,
     section_header,
 )
+
+
+def _render_report_download(ctx):
+    """One-click CSV / PDF analysis pack for the selected stock."""
+    data = ctx["data"]
+    last_close = float(data["Close"].iloc[-1])
+    prev_close = float(data["Close"].iloc[-2]) if len(data) > 1 else last_close
+    day_change = (last_close / prev_close - 1) if prev_close else 0.0
+    data_asof = data.index[-1].strftime("%Y-%m-%d") if len(data) else ""
+
+    report = build_report_dict(
+        display_name=ctx["display_name"],
+        symbol=ctx["symbol"],
+        signal=ctx["signal"],
+        confidence=ctx["confidence"],
+        model_type=ctx["model_type"],
+        use_global=ctx["use_global"],
+        thresholds=ctx["thresholds"],
+        metrics=ctx["metrics"],
+        risk=ctx["risk"],
+        plan=ctx["plan"],
+        sr=ctx["sr"],
+        last_close=last_close,
+        day_change=day_change,
+        currency=ctx.get("currency") or "",
+        data_asof=data_asof,
+    )
+    stem = filename_stem(ctx["symbol"])
+
+    section_header("Download report")
+    st.caption(
+        "One-click pack of signal, risk, trade plan, and hold-out metrics — "
+        "for notes or sharing. Educational only."
+    )
+    d1, d2 = st.columns(2)
+    with d1:
+        st.download_button(
+            "Download CSV",
+            data=report_to_csv_bytes(report),
+            file_name=f"{stem}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            help=HELP.get("report_download", "Flat key/value export of this analysis."),
+            key=f"report_csv_{ctx['symbol']}",
+        )
+    with d2:
+        if HAS_REPORTLAB:
+            try:
+                pdf_bytes = report_to_pdf_bytes(report)
+                st.download_button(
+                    "Download PDF",
+                    data=pdf_bytes,
+                    file_name=f"{stem}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    type="primary",
+                    help=HELP.get("report_download", "Printable multi-section PDF summary."),
+                    key=f"report_pdf_{ctx['symbol']}",
+                )
+            except Exception as e:
+                st.warning(f"PDF generation failed: {e}")
+        else:
+            st.caption("PDF needs `reportlab` (`pip install reportlab`).")
 
 
 def render_prediction_tab(ctx):
@@ -288,6 +359,104 @@ def render_prediction_tab(ctx):
                 f"underconfident; below = overconfident. Bubble size = number of "
                 f"days in that bucket. {verdict}{note}"
             )
+
+    st.divider()
+    _render_report_download(ctx)
+
+
+def _render_alerts_panel(scan_df, asof=None):
+    """Telegram / email alerts for top BUY screens (secrets-driven)."""
+    section_header("Alerts")
+    status = alerts_status()
+    cfg = get_alerts_config()
+
+    st.caption(
+        f"**{status['label']}** · min Buy Score **{cfg['min_buy_score']:.0f}** · "
+        f"top **{cfg['top_n']}** · min P(up) **{cfg['min_probability']:.0%}**. "
+        "Configure via Streamlit secrets `[alerts]` (see DEPLOYMENT.md). "
+        "Same snapshot is not re-alerted."
+    )
+
+    preview = select_alert_candidates(
+        scan_df,
+        min_buy_score=cfg["min_buy_score"],
+        min_probability=cfg["min_probability"],
+        max_risk=cfg["max_risk"],
+        require_edge=cfg["require_edge"],
+        top_n=cfg["top_n"],
+    )
+    if preview.empty:
+        st.info(
+            "No alert candidates with current thresholds. Lower min Buy Score "
+            "in secrets, or wait for stronger BUY screens."
+        )
+    else:
+        st.markdown(
+            f"**{len(preview)}** name(s) would alert: "
+            + ", ".join(f"`{s}`" for s in preview["Symbol"].astype(str).tolist()[:12])
+            + ("…" if len(preview) > 12 else "")
+        )
+
+    a1, a2, a3 = st.columns([1.2, 1.2, 1.1])
+    with a1:
+        dry = st.checkbox(
+            "Dry run (preview only)",
+            value=not status["configured"],
+            help="Build the message without sending Telegram/email.",
+            key="alerts_dry_run",
+        )
+    with a2:
+        force = st.checkbox(
+            "Re-alert already sent",
+            value=False,
+            help="Ignore de-dupe state for this snapshot (useful for testing).",
+            key="alerts_force",
+        )
+    with a3:
+        send_disabled = not status["configured"] and not dry
+        if st.button(
+            "Send / preview alerts",
+            type="primary",
+            use_container_width=True,
+            disabled=send_disabled,
+            help=HELP.get(
+                "alerts",
+                "Notify Telegram/email when top BUY screens clear your filters.",
+            ),
+            key="alerts_send_btn",
+        ):
+            with st.spinner("Running alerts…"):
+                result = run_alerts(
+                    scan_df,
+                    asof=asof or "live",
+                    force=force,
+                    dry_run=dry,
+                )
+            if result.get("skipped"):
+                st.info(
+                    f"Skipped: {result.get('reason')} "
+                    f"(candidates={result.get('candidates')}, new={result.get('new')})"
+                )
+            elif result.get("ok"):
+                action = "Preview" if dry else "Sent"
+                st.success(
+                    f"{action}: **{result.get('new', 0)}** new · "
+                    f"channels {', '.join(result.get('channels') or []) or '—'}"
+                )
+                if result.get("message"):
+                    with st.expander("Message body", expanded=dry):
+                        st.code(result["message"], language=None)
+            else:
+                st.error(result.get("error") or result.get("reason") or "Alert failed")
+                if result.get("message"):
+                    with st.expander("Message body"):
+                        st.code(result["message"], language=None)
+
+    if not status["configured"]:
+        st.caption(
+            "To enable: set `telegram_bot_token` + `telegram_chat_id` and/or SMTP "
+            "fields under `[alerts]` in secrets, and `enabled = true`."
+        )
 
 
 def _render_buy_pick_card(rank, row, key_prefix, on_jump):
@@ -644,6 +813,9 @@ def render_scanner_tab(ctx):
                 "Price": st.column_config.NumberColumn(format="%.2f"),
             },
         )
+
+    # ---- Alerts (Telegram / email) ----
+    _render_alerts_panel(scan_df, asof=prog.get("asof"))
 
     # ---- Full watchlist table ----
     st.divider()

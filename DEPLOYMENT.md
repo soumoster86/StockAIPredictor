@@ -4,16 +4,17 @@
 
 Files to commit:
 ```
-app.py  ui/  model.py  data.py  journal.py  auth.py  train_global.py
-stocks.csv  stocks_universe.csv  requirements.txt  requirements-dev.txt
-.gitignore  .gitattributes  DEPLOYMENT.md  .github/workflows/ci.yml
-scripts/check_models.py
+app.py  ui/  model.py  data.py  journal.py  report.py  alerts.py  auth.py
+train_global.py  stocks.csv  stocks_universe.csv  requirements.txt
+requirements-dev.txt  .gitignore  .gitattributes  DEPLOYMENT.md
+.github/workflows/ci.yml  scripts/check_models.py
 global_models/   (optional pre-trained artifacts; prefer Git LFS)
 ```
 
 Files that must NEVER be committed (already in `.gitignore`):
 - `.streamlit/secrets.toml` — your passwords live here
 - `journal.csv`, `journals/` — personal per-user forward-test data
+- `alerts/` — alert de-dupe state
 - `__pycache__/`, `.venv/`
 
 ```bash
@@ -94,6 +95,46 @@ table = "signal_journal"
 ```
 
 5. Redeploy. The Journal tab should show **Supabase (cloud-persistent)**.
+
+### Optional: Alerts (Telegram / email)
+
+When the Screener has scored results, the app can notify you of new top BUY
+screens. De-dupes per rankings snapshot under `alerts/state.json` (local only;
+not committed).
+
+1. Create a Telegram bot via [@BotFather](https://t.me/BotFather), get the token,
+   then message your bot and fetch `chat_id` from
+   `https://api.telegram.org/bot<token>/getUpdates`
+2. Streamlit Cloud → App settings → Secrets:
+
+```toml
+[alerts]
+enabled = true
+min_buy_score = 60
+min_probability = 0.55
+top_n = 10
+require_edge = true
+max_risk = 8.0
+telegram_bot_token = "123456:ABC..."
+telegram_chat_id = "987654321"
+# optional email
+# smtp_host = "smtp.gmail.com"
+# smtp_port = 587
+# smtp_user = "you@gmail.com"
+# smtp_password = "app-password"
+# email_to = "you@gmail.com"
+# email_from = "you@gmail.com"
+```
+
+3. In the app → **Screener** → **Alerts** → use **Dry run** first, then send.
+   Set `enabled = true` for production; the UI can still force a send when
+   channels are configured.
+
+### One-click PDF / CSV report
+
+On **Prediction**, download a CSV or PDF pack (signal, risk, plan, metrics) for
+the selected stock. PDF needs `reportlab` (already in `requirements.txt`).
+
 - **Resource limits (~1 GB)**: avoid opening many stocks × model types in
   one session; the app caps its model cache, but heavy use can still hit
   "over its resource limits" → reboot the app from the cloud dashboard.

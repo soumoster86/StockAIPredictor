@@ -116,6 +116,15 @@ signal. Open the stock for the full model signal before making any decision.
 - Tracks target hit, stop hit, expired plans, win rate, and average return.
 - Always download CSV from the Journal tab as a backup.
 
+### Reports and alerts
+
+- **One-click report** (Prediction tab): download CSV or PDF of signal, risk,
+  trade plan, and hold-out metrics for the selected stock (`report.py`).
+- **Alerts** (Screener tab): optional Telegram and/or email when top BUY screens
+  clear your filters. Configure `[alerts]` in Streamlit secrets (see
+  DEPLOYMENT.md). De-dupes per rankings snapshot so the same names are not
+  re-alerted.
+
 ---
 
 ## What the App Predicts
@@ -334,6 +343,8 @@ the model's own predictions.
 ├── data.py             # Data download, feature engineering, targets
 ├── model.py            # Models, training, signals, backtests, trade planning
 ├── journal.py          # Journal API + local/Supabase backends
+├── report.py           # One-click CSV / PDF analysis packs
+├── alerts.py           # Telegram / email alerts for top BUY screens
 ├── train_global.py     # Offline trainer for the pooled global model
 ├── scripts/check_models.py  # Validate global_models/ (or GLOBAL_MODEL_DIR)
 ├── scripts/precompute_rankings.py  # Offline full-universe screener job
@@ -345,12 +356,13 @@ the model's own predictions.
 ├── requirements-dev.txt# Dev extras (pytest)
 ├── DEPLOYMENT.md       # Streamlit Community Cloud deployment guide
 ├── LICENSE             # Unlicense / public domain dedication
-├── .gitignore          # Secrets, journals/, caches, venv
+├── .gitignore          # Secrets, journals/, alerts/, caches, venv
 ├── .gitattributes      # Git LFS pointers for *.joblib (optional)
 ├── .streamlit/config.toml      # Theme (safe to commit; no secrets)
 ├── .github/workflows/ci.yml    # pytest on Python 3.11 and 3.12
 ├── tests/              # Unit + static integrity tests
 ├── journals/           # Per-user CSVs at runtime (gitignored)
+├── alerts/             # Alert de-dupe state at runtime (gitignored)
 └── global_models/      # Created by train_global.py, then committed / LFS
                         #   global_h1..h20.joblib + global_meta.json
                         #   override path with env GLOBAL_MODEL_DIR
@@ -369,6 +381,7 @@ the model's own predictions.
 - PyTorch
 - scikit-learn
 - XGBoost
+- reportlab (PDF reports)
 
 ---
 
