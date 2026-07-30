@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-07-29T19:45:34Z",
+  "generated_at": "2026-07-30T19:54:21Z",
   "n_requested": 2367,
-  "n_scored": 2054,
-  "n_failed": 313,
+  "n_scored": 2055,
+  "n_failed": 312,
   "batch_size": 80,
   "engine": "global",
-  "elapsed_s": 607.6,
+  "elapsed_s": 579.4,
   "source": "precomputed",
   "watchlist": "stocks_universe.csv",
   "runner": "github-actions",
-  "run_id": "30484987199",
-  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/30484987199",
+  "run_id": "30576044769",
+  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/30576044769",
   "workflow": "Nightly rankings",
   "failures_sample": [
     {
@@ -103,10 +103,6 @@
     },
     {
       "symbol": "ANTHEM.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "ANUHPHR.NS",
       "reason": "no/short data"
     },
     {
@@ -211,6 +207,10 @@
     },
     {
       "symbol": "BMWVENTLTD.NS",
+      "reason": "no/short data"
+    },
+    {
+      "symbol": "BNAGROCHEM.NS",
       "reason": "no/short data"
     }
   ],
