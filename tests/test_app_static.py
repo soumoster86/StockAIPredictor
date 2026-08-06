@@ -13,7 +13,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 APP = ROOT / "app.py"
 UI_DIR = ROOT / "ui"
-MODULES = ["app", "model", "data", "journal", "auth", "report", "alerts"]
+MODULES = ["app", "model", "data", "journal", "auth", "report", "alerts", "rankings_log"]
 UI_PY = sorted(UI_DIR.glob("*.py")) if UI_DIR.exists() else []
 
 

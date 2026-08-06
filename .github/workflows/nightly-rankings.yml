@@ -70,6 +70,12 @@ jobs:
           MAX_SYMBOLS: ${{ github.event.inputs.max_symbols }}
           BATCH_SIZE: ${{ github.event.inputs.batch_size || '80' }}
           PAUSE: ${{ github.event.inputs.pause || '0.5' }}
+          # Optional Supabase run log (set repo secrets; no-op if missing)
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # Optional override; default table name is rankings_run_log
+          SUPABASE_RANKINGS_LOG_TABLE: ${{ vars.SUPABASE_RANKINGS_LOG_TABLE }}
         run: |
           set -euo pipefail
           ARGS=(--stocks stocks_universe.csv --batch-size "${BATCH_SIZE}" --pause "${PAUSE}")

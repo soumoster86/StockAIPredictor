@@ -28,6 +28,7 @@ from ui.tabs import (
     render_journal_tab,
     render_plan_tab,
     render_prediction_tab,
+    render_rankings_log_tab,
     render_scanner_tab,
     render_walkforward_tab,
 )
@@ -129,6 +130,7 @@ _SECTIONS = [
     "Backtest",
     "Walk-forward",
     "Journal",
+    "Rankings log",
     "Charts",
 ]
 # Migrate older label so saved session still opens the screener
@@ -156,6 +158,8 @@ elif section == "Walk-forward":
     render_walkforward_tab(ctx)
 elif section == "Journal":
     render_journal_tab(ctx)
+elif section == "Rankings log":
+    render_rankings_log_tab(ctx)
 else:
     render_charts_tab(ctx)
 

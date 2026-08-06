@@ -82,6 +82,36 @@ precomputed results after each successful nightly run.
 If the job fails often (Yahoo rate limits), increase `pause` in the workflow
 dispatch inputs (e.g. `0.8`) or lower batch size.
 
+### Optional: Supabase log for nightly rankings
+
+Each precompute run can insert one row into Supabase (`rankings_run_log`):
+status, scores, runner, GitHub run URL, top symbols, timing.
+
+1. Supabase SQL Editor → run `scripts/supabase_rankings_log.sql`
+2. GitHub → repo → **Settings → Secrets and variables → Actions**:
+   - `SUPABASE_URL` = `https://YOUR_PROJECT.supabase.co`
+   - `SUPABASE_SERVICE_KEY` = **service_role** key (Settings → API)
+3. Re-run **Nightly rankings** (or wait for schedule). In the job log look for:
+   - `supabase log: inserted` — success
+   - `supabase log: skipped (...)` — secrets not set
+   - `supabase log: FAILED — ...` — table/RLS/key issue
+4. Supabase → **Table Editor → rankings_run_log** to browse history
+
+Optional Streamlit secrets (same project) to view history in the app section
+**Rankings log**:
+
+```toml
+[rankings_log]
+enabled = true
+supabase_url = "https://YOUR_PROJECT.supabase.co"
+supabase_key = "YOUR_SERVICE_ROLE_KEY"
+table = "rankings_run_log"
+```
+
+If `[rankings_log]` is omitted, the app may fall back to `[journal]` URL/key
+for the same Supabase project. Open **Rankings log** in the main section nav
+for the full table, filters, and CSV export.
+
 ### Optional: Supabase journal (survives redeploys)
 
 1. Create a free project at https://supabase.com

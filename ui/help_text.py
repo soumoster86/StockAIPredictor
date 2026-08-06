@@ -46,4 +46,5 @@ HELP = {
     "use_global": "A global model is available. Keep it on for pooled-data predictions, or untick to train a per-stock model on the fly and compare the two in the Walk-Forward tab. Global accuracy on this page is indicative, not fully out-of-sample.",
     "report_download": "One-click CSV or PDF of this stock's signal, risk, trade plan, and hold-out metrics. For personal notes only — not a research report or recommendation.",
     "alerts": "Optional Telegram/email when top BUY screens clear your min Buy Score filters. Configure [alerts] in Streamlit secrets. De-dupes per rankings snapshot so the same names are not spammed.",
+    "rankings_log": "Supabase rankings_run_log: history of Nightly rankings / precompute jobs (scored counts, status, CI link). Separate from the signal Journal. Requires [rankings_log] or journal Supabase credentials in secrets.",
 }

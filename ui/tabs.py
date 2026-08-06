@@ -25,6 +25,11 @@ from model import (
     rank_buy_candidates,
     rating_from_prob,
 )
+from rankings_log import (
+    fetch_recent_rankings_logs,
+    get_rankings_log_config,
+    rankings_log_status,
+)
 from report import (
     HAS_REPORTLAB,
     build_report_dict,
@@ -882,6 +887,11 @@ def _render_scanner_data_source(stocks, prog, pre, scan_failures):
             if len(scan_failures) > 100:
                 st.caption(f"…and {len(scan_failures) - 100} more")
 
+    st.caption(
+        "Full history of Nightly / precompute runs lives in the main section "
+        "**Rankings log** (Supabase table `rankings_run_log`)."
+    )
+
 
 def _render_scanner_top_picks(scan_df, symbol, signal, display_name):
     """Section: sticky filters + pick cards (primary user focus)."""
@@ -1468,6 +1478,198 @@ def render_walkforward_tab(ctx):
             )
         except ValueError as e:
             st.warning(str(e))
+
+
+def render_rankings_log_tab(ctx=None):
+    """Dedicated Supabase rankings_run_log viewer (Nightly / precompute history)."""
+    section_header("Rankings run log")
+    st.caption(
+        "History of **Nightly rankings** and offline precompute jobs stored in "
+        "Supabase table **`rankings_run_log`**. Separate from the signal **Journal**."
+    )
+
+    status = rankings_log_status()
+    cfg = get_rankings_log_config()
+
+    if status["configured"]:
+        st.success(
+            f"Connected · **{status['label']}** · "
+            f"project credentials from secrets / env"
+        )
+    else:
+        st.warning(
+            "Not connected — add Supabase credentials so this page can load rows."
+        )
+        st.markdown(
+            """
+**Setup**
+
+1. Supabase SQL Editor → run `scripts/supabase_rankings_log.sql`
+2. Streamlit secrets:
+
+```toml
+[rankings_log]
+enabled = true
+supabase_url = "https://YOUR_PROJECT.supabase.co"
+supabase_key = "YOUR_SERVICE_ROLE_KEY"
+table = "rankings_run_log"
+```
+
+3. GitHub Actions secrets (for **writing** logs from Nightly):  
+   `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` (same project)
+4. Run **Actions → Nightly rankings** once, then **Refresh** below.
+
+You can reuse the same URL/key as `[journal]` — only the **table** differs.
+            """
+        )
+        return
+
+    c1, c2, c3 = st.columns([1.2, 1.2, 1.5])
+    with c1:
+        limit = st.selectbox(
+            "Show last",
+            options=[20, 50, 100],
+            index=0,
+            key="rankings_log_limit",
+        )
+    with c2:
+        status_filter = st.selectbox(
+            "Status",
+            options=["All", "success", "failed"],
+            index=0,
+            key="rankings_log_status_filter",
+        )
+    with c3:
+        st.write("")  # align button with selects
+        st.write("")
+        refresh = st.button(
+            "Refresh log",
+            type="primary",
+            use_container_width=True,
+            key="rankings_log_refresh",
+            help=HELP.get(
+                "rankings_log",
+                "Reload rankings_run_log from Supabase.",
+            ),
+        )
+
+    if refresh:
+        st.toast("Reloading rankings log…", icon="🔄")
+
+    try:
+        rows = fetch_recent_rankings_logs(limit=int(limit))
+    except Exception as e:
+        st.error(f"Could not load `rankings_run_log`: {e}")
+        st.caption(
+            "Check service_role key, table name, and that the SQL migration was applied."
+        )
+        return
+
+    if status_filter != "All":
+        rows = [
+            r for r in rows
+            if str(r.get("status") or "").lower() == status_filter
+        ]
+
+    if not rows:
+        st.info(
+            "No log rows yet (or none match this filter). "
+            "After GitHub secrets are set, run **Nightly rankings** — "
+            "the job should print `supabase log: inserted`."
+        )
+        st.caption(f"Table · `{cfg.get('table') or 'rankings_run_log'}`")
+        return
+
+    # Summary KPIs from the loaded window
+    n = len(rows)
+    n_ok = sum(1 for r in rows if str(r.get("status") or "").lower() == "success")
+    n_fail = sum(1 for r in rows if str(r.get("status") or "").lower() == "failed")
+    last = rows[0]
+    last_scored = last.get("n_scored")
+    last_when = last.get("generated_at") or last.get("logged_at") or "—"
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Rows shown", f"{n}")
+    k2.metric("Success", f"{n_ok}")
+    k3.metric("Failed", f"{n_fail}")
+    k4.metric("Latest scored", f"{last_scored if last_scored is not None else '—'}")
+    k5.metric("Latest run", str(last_when)[:16] if last_when else "—")
+
+    st.divider()
+    section_header("Run history")
+
+    df = pd.DataFrame(rows)
+    # Prefer a stable column order for the table
+    preferred = [
+        "logged_at", "generated_at", "status", "runner", "workflow",
+        "n_requested", "n_scored", "n_failed", "batch_size", "elapsed_s",
+        "engine", "watchlist", "run_id", "run_url", "top_symbols",
+        "error_message", "repo", "git_sha",
+    ]
+    cols = [c for c in preferred if c in df.columns]
+    # Append any extras (except huge meta blob as primary view)
+    for c in df.columns:
+        if c not in cols and c != "meta":
+            cols.append(c)
+    view = df[cols] if cols else df
+
+    st.dataframe(
+        view,
+        use_container_width=True,
+        hide_index=True,
+        height=min(520, 80 + 36 * min(len(view), 12)),
+        column_config={
+            "run_url": st.column_config.LinkColumn("CI run", display_text="Open run"),
+            "n_scored": st.column_config.NumberColumn("Scored", format="%d"),
+            "n_failed": st.column_config.NumberColumn("Failed", format="%d"),
+            "n_requested": st.column_config.NumberColumn("Requested", format="%d"),
+            "elapsed_s": st.column_config.NumberColumn("Seconds", format="%.1f"),
+            "status": st.column_config.TextColumn("Status"),
+            "top_symbols": st.column_config.TextColumn("Top symbols"),
+            "error_message": st.column_config.TextColumn("Error"),
+        },
+    )
+
+    # Detail for latest row
+    with st.expander("Latest run detail", expanded=True):
+        st.markdown(
+            f"**Status** · `{last.get('status', '—')}`  \n"
+            f"**Generated** · `{last.get('generated_at') or '—'}`  \n"
+            f"**Logged** · `{last.get('logged_at') or '—'}`  \n"
+            f"**Runner** · `{last.get('runner') or '—'}` · "
+            f"**workflow** · `{last.get('workflow') or '—'}`  \n"
+            f"**Scored** · **{last.get('n_scored', '—')}** / "
+            f"failed **{last.get('n_failed', '—')}** "
+            f"(requested {last.get('n_requested', '—')})  \n"
+            f"**Engine** · `{last.get('engine') or '—'}` · "
+            f"**elapsed** · {last.get('elapsed_s', '—')}s  \n"
+            f"**Watchlist** · `{last.get('watchlist') or '—'}`"
+        )
+        if last.get("run_url"):
+            st.markdown(f"[Open GitHub Actions run]({last['run_url']})")
+        if last.get("top_symbols"):
+            st.caption(f"Top symbols · {last['top_symbols']}")
+        if last.get("error_message"):
+            st.error(last["error_message"])
+        meta = last.get("meta")
+        if meta:
+            with st.expander("Raw meta JSON", expanded=False):
+                st.json(meta if isinstance(meta, dict) else {"raw": meta})
+
+    # CSV export of the window
+    st.download_button(
+        "Download shown rows (CSV)",
+        data=view.to_csv(index=False).encode("utf-8-sig"),
+        file_name="rankings_run_log.csv",
+        mime="text/csv",
+        use_container_width=False,
+        key="rankings_log_csv",
+    )
+    st.caption(
+        f"Source table · `{cfg.get('table') or 'rankings_run_log'}` · "
+        "writes come from Nightly Actions / `precompute_rankings.py` · "
+        "this page is read-only."
+    )
 
 
 def render_journal_tab(ctx):

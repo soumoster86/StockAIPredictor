@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from rankings_log import log_rankings_run  # noqa: E402
 from screener import (  # noqa: E402
     RANKINGS_DIR,
     SCAN_BATCH,
@@ -107,15 +108,12 @@ def main():
     def on_batch(done, total, n_ok, n_fail):
         print(f"  [{done}/{total}] batch ok={n_ok} fail={n_fail}", flush=True)
 
-    df, failures, meta = scan_universe(
-        items,
-        batch_size=args.batch_size,
-        max_symbols=args.max,
-        pause_s=args.pause,
-        on_batch=on_batch,
-    )
-    meta["watchlist"] = path.name
-    # Annotate CI / local runner for the app "as of" diagnostics
+    meta = {
+        "watchlist": path.name,
+        "batch_size": args.batch_size,
+        "max_symbols": args.max,
+        "n_requested": len(items) if args.max is None else min(len(items), args.max),
+    }
     if os.environ.get("GITHUB_ACTIONS"):
         meta["runner"] = "github-actions"
         meta["run_id"] = os.environ.get("GITHUB_RUN_ID")
@@ -128,25 +126,98 @@ def main():
     else:
         meta["runner"] = "local"
 
-    # Soft quality gate: fail CI if almost nothing scored (bad Yahoo day / models missing)
-    min_ok = max(10, int(0.05 * (meta.get("n_requested") or len(items))))
-    if meta.get("n_scored", 0) < min_ok:
-        sys.exit(
-            f"Too few scored rows ({meta.get('n_scored')} < {min_ok}). "
-            "Check yfinance rate limits and global_models/ artifacts."
+    try:
+        df, failures, scan_meta = scan_universe(
+            items,
+            batch_size=args.batch_size,
+            max_symbols=args.max,
+            pause_s=args.pause,
+            on_batch=on_batch,
         )
+        meta.update(scan_meta or {})
+        meta["watchlist"] = path.name
+        if args.max is not None:
+            meta["max_symbols"] = args.max
 
-    csv_path, meta_path = save_rankings(df, failures, meta, directory=args.out)
+        # Soft quality gate: fail CI if almost nothing scored
+        min_ok = max(10, int(0.05 * (meta.get("n_requested") or len(items))))
+        if meta.get("n_scored", 0) < min_ok:
+            msg = (
+                f"Too few scored rows ({meta.get('n_scored')} < {min_ok}). "
+                "Check yfinance rate limits and global_models/ artifacts."
+            )
+            _log_to_supabase(
+                meta, status="failed", error_message=msg,
+                max_symbols=args.max, top_df=df,
+            )
+            sys.exit(msg)
 
-    print(f"\nDone in {meta['elapsed_s']}s")
-    print(f"  scored={meta['n_scored']}  failed={meta['n_failed']}  engine={meta['engine']}")
-    print(f"  runner={meta.get('runner')}")
-    print(f"  wrote {csv_path}")
-    print(f"  wrote {meta_path}")
-    if meta.get("run_url"):
-        print(f"  run={meta['run_url']}")
-    print("Commit or sync the rankings/ folder for instant app loads.")
-    return 0
+        csv_path, meta_path = save_rankings(df, failures, meta, directory=args.out)
+
+        print(f"\nDone in {meta['elapsed_s']}s")
+        print(f"  scored={meta['n_scored']}  failed={meta['n_failed']}  engine={meta['engine']}")
+        print(f"  runner={meta.get('runner')}")
+        print(f"  wrote {csv_path}")
+        print(f"  wrote {meta_path}")
+        if meta.get("run_url"):
+            print(f"  run={meta['run_url']}")
+
+        log_res = _log_to_supabase(
+            meta, status="success", max_symbols=args.max, top_df=df,
+        )
+        if log_res.get("skipped"):
+            print(f"  supabase log: skipped ({log_res.get('reason')})")
+        elif log_res.get("ok"):
+            print("  supabase log: inserted")
+        else:
+            print(f"  supabase log: FAILED — {log_res.get('reason')}")
+
+        print("Commit or sync the rankings/ folder for instant app loads.")
+        return 0
+    except SystemExit:
+        raise
+    except Exception as e:
+        _log_to_supabase(
+            meta, status="failed", error_message=str(e), max_symbols=args.max,
+        )
+        raise
+
+
+def _top_symbols_from_df(df, n: int = 10) -> list[str]:
+    if df is None or getattr(df, "empty", True):
+        return []
+    work = df
+    if "Screen" in work.columns:
+        buys = work[work["Screen"] == "BUY"]
+        if not buys.empty:
+            work = buys
+    if "Buy Score" in work.columns:
+        work = work.sort_values("Buy Score", ascending=False)
+    if "Symbol" not in work.columns:
+        return []
+    return work["Symbol"].astype(str).head(n).tolist()
+
+
+def _log_to_supabase(
+    meta: dict,
+    *,
+    status: str,
+    error_message: str | None = None,
+    max_symbols=None,
+    top_df=None,
+) -> dict:
+    """Best-effort Supabase insert; never raises into the main path."""
+    try:
+        return log_rankings_run(
+            meta,
+            status=status,
+            error_message=error_message,
+            top_symbols=_top_symbols_from_df(top_df),
+            max_symbols=max_symbols,
+        )
+    except Exception as e:
+        print(f"  supabase log: exception — {e}")
+        return {"ok": False, "skipped": False, "reason": str(e)}
 
 
 if __name__ == "__main__":
