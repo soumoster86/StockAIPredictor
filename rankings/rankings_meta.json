@@ -4,14 +4,14 @@
   "max_symbols": null,
   "n_requested": 2367,
   "runner": "github-actions",
-  "run_id": "32289032391",
-  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/32289032391",
+  "run_id": "32405364450",
+  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/32405364450",
   "workflow": "Nightly rankings",
-  "generated_at": "2026-08-19T18:50:57Z",
-  "n_scored": 2066,
-  "n_failed": 301,
+  "generated_at": "2026-08-20T19:00:30Z",
+  "n_scored": 2063,
+  "n_failed": 304,
   "engine": "global",
-  "elapsed_s": 326.6,
+  "elapsed_s": 546.5,
   "source": "precomputed",
   "failures_sample": [
     {
@@ -119,6 +119,10 @@
       "reason": "no/short data"
     },
     {
+      "symbol": "ARTEMISMED.NS",
+      "reason": "no/short data"
+    },
+    {
       "symbol": "ASHIKA.NS",
       "reason": "no/short data"
     },
@@ -208,10 +212,6 @@
     },
     {
       "symbol": "BMWVENTLTD.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BNAGROCHEM.NS",
       "reason": "no/short data"
     }
   ],
