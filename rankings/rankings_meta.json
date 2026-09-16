@@ -4,14 +4,14 @@
   "max_symbols": null,
   "n_requested": 2367,
   "runner": "github-actions",
-  "run_id": "35023917867",
-  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/35023917867",
+  "run_id": "35150857693",
+  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/35150857693",
   "workflow": "Nightly rankings",
-  "generated_at": "2026-09-15T21:21:29Z",
-  "n_scored": 2076,
-  "n_failed": 291,
+  "generated_at": "2026-09-16T21:21:25Z",
+  "n_scored": 2078,
+  "n_failed": 289,
   "engine": "global",
-  "elapsed_s": 665.9,
+  "elapsed_s": 583.9,
   "source": "precomputed",
   "failures_sample": [
     {
@@ -60,10 +60,6 @@
     },
     {
       "symbol": "AEQUS.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "AGARWALEYE.NS",
       "reason": "no/short data"
     },
     {
@@ -212,6 +208,10 @@
     },
     {
       "symbol": "BNAGROCHEM.NS",
+      "reason": "no/short data"
+    },
+    {
+      "symbol": "BNALTD.NS",
       "reason": "no/short data"
     }
   ],
