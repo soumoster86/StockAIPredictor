@@ -4,14 +4,14 @@
   "max_symbols": null,
   "n_requested": 2367,
   "runner": "github-actions",
-  "run_id": "36191415148",
-  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/36191415148",
+  "run_id": "36496420370",
+  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/36496420370",
   "workflow": "Nightly rankings",
-  "generated_at": "2026-09-25T21:34:27Z",
+  "generated_at": "2026-09-28T23:19:34Z",
   "n_scored": 2083,
   "n_failed": 284,
   "engine": "global",
-  "elapsed_s": 498.7,
+  "elapsed_s": 565.0,
   "source": "precomputed",
   "failures_sample": [
     {
