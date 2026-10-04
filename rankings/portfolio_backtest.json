@@ -1,0 +1,65 @@
+{
+  "generated_at": "2026-10-04T21:55:05",
+  "elapsed_s": 372.8,
+  "watchlist": "stocks_universe.csv",
+  "n_symbols": 2364,
+  "n_usable": 2213,
+  "params": {
+    "model": "XGBoost",
+    "horizon": 1,
+    "train_frac": 0.6,
+    "cut_date": "2024-02-16",
+    "test_start": "2024-02-24",
+    "top_n": 10,
+    "rebalance_days": 5,
+    "capital": 1000000,
+    "min_turnover_cr": 1.0,
+    "max_risk": 8.0,
+    "min_prob": 0.55,
+    "risk_free_rate": 0.06
+  },
+  "stats": {
+    "total_return": -0.22195145891625656,
+    "cagr": -0.09298657794714393,
+    "volatility": 0.12446358293357392,
+    "sharpe": -1.189830435453065,
+    "max_drawdown": -0.27637044541959754,
+    "start": "2024-02-26",
+    "end": "2026-10-02",
+    "n_trades": 461,
+    "hit_rate": 0.4403470715835141,
+    "avg_trade_return": -0.006596446768291688,
+    "avg_holdings": 3.771604938271605,
+    "costs_paid": 281656.0357626955,
+    "costs_pct_per_year": 0.12408418873869968,
+    "turnover_per_year": 36.333324909230065
+  },
+  "benchmarks": {
+    "Nifty 500 (price index)": {
+      "total_return": 0.07908594856604534,
+      "cagr": 0.030042455855829875,
+      "volatility": 0.14647605611745035,
+      "sharpe": -0.12222461561344296,
+      "max_drawdown": -0.18843200267763505,
+      "start": "2024-02-26",
+      "end": "2026-10-02",
+      "symbol": "^CRSLDX"
+    },
+    "Nifty 50 ETF (total return)": {
+      "total_return": 0.047494609853063974,
+      "cagr": 0.018208714968445117,
+      "volatility": 0.12083008773003015,
+      "sharpe": -0.27258071761453523,
+      "max_drawdown": -0.15234440367699398,
+      "start": "2024-02-26",
+      "end": "2026-10-02",
+      "symbol": "NIFTYBEES.NS"
+    }
+  },
+  "caveats": [
+    "The universe is today's listed stocks. Companies that were delisted or collapsed during the test period are missing, which flatters the result.",
+    "The ranking model here is refit on early history only, so it is weaker than the deployed global model is on recent data \u2014 but this is the only honest way to test it.",
+    "The Nifty 500 benchmark is a price index (excludes ~1.3%/yr of dividends); the Nifty 50 ETF includes dividends net of fees.",
+    "Taxes (STCG at 20%) are not deducted."
+  ]
+}
