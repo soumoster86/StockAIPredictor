@@ -43,6 +43,15 @@ ENTRY_GRID = np.round(np.arange(0.50, 0.71, 0.05), 2)
 EXIT_GRID = np.round(np.arange(0.30, 0.51, 0.05), 2)
 SEQ_WINDOW = 20  # lookback days for LSTM/GRU
 PLAN_MAX_HOLD_DAYS = 20  # plan expiry — matches journal.MAX_HOLD_DAYS
+# Screener ranking. An out-of-sample portfolio test (2020-26, 2,081 NSE
+# stocks, real costs) found the 1-day model churned a weekly portfolio into
+# 24%/yr of costs, and a fixed 0.55 cutoff almost never fired because the
+# label's base rate is ~40%, not 50%. Ranking on the 10-day model, taking
+# the top slice of the liquid universe and reviewing every ~2 weeks cut
+# costs to ~9%/yr and turned a loss into +15%/yr (Nifty 500: +18%/yr).
+SCREEN_HORIZON = 10
+SCREEN_TOP_PCT = 0.05
+SCREEN_REVIEW_DAYS = 10
 
 MODEL_TYPES = ["Ensemble (NN + XGBoost + RF)", "Neural Network", "LSTM", "GRU"]
 
@@ -1137,11 +1146,19 @@ def buy_score(probability, accuracy=None, baseline=None, risk=None,
 
 
 def rank_buy_candidates(scan_df, min_prob=0.55, max_risk=8.0,
-                        require_edge=True, top_n=10, min_turnover_cr=1.0,
-                        exclude_tight_band=True, exclude_symbols=None):
+                        require_edge=False, top_n=10, min_turnover_cr=1.0,
+                        exclude_tight_band=True, exclude_symbols=None,
+                        top_pct=SCREEN_TOP_PCT):
     """Filter and rank a scan DataFrame into best long candidates.
 
     Expects columns produced by `run_scan` (Screen, Probability Up, …).
+    Entry is relative by default: names whose probability is in the top
+    `top_pct` of the scored, liquid universe — so the shortlist adapts to
+    the label's base rate instead of waiting for an absolute cutoff that
+    rarely fires. With `top_pct=None`, entry is absolute (Screen == BUY and
+    probability ≥ `min_prob`). `require_edge` (accuracy ≥ majority
+    baseline) is off by default: with a ~40% base rate the always-"no"
+    baseline scores ~60% and the filter rejects nearly everything.
     Tradability filters apply when their columns are present (older
     precomputed files lack them): `min_turnover_cr` drops names trading less
     than that many ₹ crore a day; `exclude_tight_band` drops names whose
@@ -1166,12 +1183,22 @@ def rank_buy_candidates(scan_df, min_prob=0.55, max_risk=8.0,
             ))
         df["Buy Score"] = scores
 
-    buys = df[df["Screen"] == "BUY"].copy() if "Screen" in df.columns else df.copy()
+    if top_pct is not None and "Probability Up" in df.columns:
+        pool = df
+        if min_turnover_cr and "Traded Value" in df.columns:
+            tv = pd.to_numeric(df["Traded Value"], errors="coerce").fillna(0)
+            pool = df[tv >= float(min_turnover_cr)]
+        if pool.empty:
+            return pool.copy()
+        cut = float(pool["Probability Up"].quantile(1.0 - float(top_pct)))
+        buys = df[df["Probability Up"] >= cut].copy()
+    else:
+        buys = df[df["Screen"] == "BUY"].copy() if "Screen" in df.columns else df.copy()
+        if "Probability Up" in buys.columns:
+            buys = buys[buys["Probability Up"] >= float(min_prob)]
     if buys.empty:
         return buys
 
-    if "Probability Up" in buys.columns:
-        buys = buys[buys["Probability Up"] >= float(min_prob)]
     if max_risk is not None and "Risk" in buys.columns:
         buys = buys[buys["Risk"] <= float(max_risk)]
     if require_edge and "Test Acc" in buys.columns and "Baseline" in buys.columns:
@@ -1229,16 +1256,18 @@ def quick_scan_global(data, bundle=None, thresholds=DEFAULT_THRESHOLDS):
     """Screen one stock with a pre-trained global model — no per-stock fit.
 
     Freezes the global weights, scores this stock's last-20% chronology for
-    indicative accuracy, and reports the latest probability. Prefer this in
-    the watchlist scanner when global artifacts are present (orders of
-    magnitude faster than training a tree per name)."""
+    indicative accuracy (against the bundle's own horizon), and reports the
+    latest probability. Prefer this in the watchlist scanner when global
+    artifacts are present (orders of magnitude faster than training a tree
+    per name)."""
     if bundle is None:
-        bundle = load_global_model(1)
+        bundle = load_screen_model()
     if bundle is None:
         return None
 
     predictor, scaler = bundle["predictor"], bundle["scaler"]
-    X, y, _ = _masked(data, 'Target_1')
+    horizon = int(bundle.get("horizon", 1) or 1)
+    X, y, _ = _masked(data, f'Target_{horizon}')
     if len(X) < 80:
         return None
 
@@ -1250,7 +1279,8 @@ def quick_scan_global(data, bundle=None, thresholds=DEFAULT_THRESHOLDS):
         return None
     cm = _classification_metrics(test_probs[t_ok], y[split:][t_ok])
     prob = predictor.predict_last(scaler.transform(data[FEATURES].values))
-    return _scan_result(prob, cm, "Global", thresholds, source="global")
+    name = "Global" if horizon == 1 else f"Global {horizon}d"
+    return _scan_result(prob, cm, name, thresholds, source="global")
 
 
 # =====================================================================
@@ -1407,6 +1437,12 @@ def load_global_model(horizon, directory=GLOBAL_MODEL_DIR):
         )
         return None
     return bundle
+
+
+def load_screen_model(directory=GLOBAL_MODEL_DIR):
+    """The screener's ranking model: the SCREEN_HORIZON global model, or the
+    1-day one when that artifact is missing."""
+    return load_global_model(SCREEN_HORIZON, directory) or load_global_model(1, directory)
 
 
 def global_model_available(directory=GLOBAL_MODEL_DIR):

@@ -9,6 +9,7 @@ from execution import cost_profile_for
 from model import (
     global_model_available,
     load_global_model,
+    load_screen_model,
     multi_horizon_forecast,
     multi_horizon_global,
     predict_with_global,
@@ -208,7 +209,7 @@ def run_scan_batch(stock_items, offset=0, batch_size=SCAN_BATCH):
     # Use cached fetch helpers from this module
     price_map = get_data_batch(tuple(sym for _, sym in batch))
     index_close = get_index()
-    bundle = load_global_model(1) if global_model_available() else None
+    bundle = load_screen_model() if global_model_available() else None
     rows, failures = score_batch(
         batch, index_close=index_close, global_bundle=bundle, price_map=price_map,
     )

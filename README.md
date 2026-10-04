@@ -78,8 +78,27 @@ entry. It does not mean short sell.
 
 ### Scanner
 
-The Scanner tab screens the entire watchlist quickly. It uses a faster model
-and default thresholds so that the app can rank many stocks at once.
+The Scanner tab screens the entire watchlist quickly. It scores every stock
+with the pre-trained **10-day** global model and builds the shortlist from the
+**top 5%** of the liquid, scored universe by probability, ranked by Buy Score.
+Review the shortlist about every **10 trading days**.
+
+Why these settings: an out-of-sample portfolio test (models trained on
+2010–Feb 2020, traded Mar 2020–Oct 2026, 2,081 NSE stocks, real costs) found:
+
+| Screener setup | CAGR | Sharpe | Costs/yr |
+|---|---|---|---|
+| Old: 1-day model, weekly, probability > 0.55 | +4.2% (almost always in cash) | −0.64 | 0.4% |
+| 1-day model, weekly, top 5% | −4.9% | −0.47 | 23.8% |
+| **New: 10-day model, every 2 weeks, top 5%** | **+15.1%** | **0.60** | 8.7% |
+| Nifty 500 (price index) | +17.8% | 0.71 | — |
+
+The fixed 0.55 cutoff almost never fired because the label's base rate is
+~40%, not 50%. Even the best setup **trailed the index**, and beat it in only
+three of seven calendar years — treat the shortlist as research leads, not a
+strategy. The "require model edge" filter is off by default: with a ~40% base
+rate, the always-"no" baseline scores ~60% accuracy and the filter rejects
+almost everything.
 
 The scanner output is labelled as a `Screen Call`, not the final trading
 signal. Open the stock for the full model signal before making any decision.
@@ -199,8 +218,10 @@ This is the primary signal to trust inside the app.
 
 The Scanner tab is a fast watchlist ranking tool. It uses:
 
-- A lightweight tree model.
-- Default thresholds.
+- The pre-trained 10-day global model (a lightweight per-stock tree only when
+  no global model is available).
+- A relative shortlist (top 5% of the liquid universe); the `Screen` column
+  keeps the old absolute call at default thresholds for reference.
 - No per-stock threshold tuning.
 - A speed-first workflow designed to scan many symbols.
 

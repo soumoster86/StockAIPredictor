@@ -152,3 +152,38 @@ def test_series_stats_cagr():
     s = series_stats(eq, 100)
     assert abs(s["total_return"] - 0.10) < 1e-12
     assert abs(s["cagr"] - (1.10 ** (252 / 253) - 1)) < 1e-12
+
+
+def test_relative_entry_threshold_uses_cross_sectional_quantile():
+    from portfolio import rank_candidates
+    frames, probs, start = _universe()
+    d = start
+    # All absolute probabilities sit below 0.55 → absolute entry finds nothing...
+    low = probs.loc[d] * 0.5
+    adv = pd.Series(1e9, index=low.index)
+    nan = pd.Series(float("nan"), index=low.index)
+    assert rank_candidates(frames, d, low, adv, nan, nan, max_risk=10) == []
+    # ...but the relative entry still takes the day's best names.
+    top = rank_candidates(frames, d, low, adv, nan, nan, max_risk=10, min_quantile=0.7)
+    assert top == ["B"]                                  # highest prob, liquid here
+
+
+def test_require_edge_toggle():
+    from portfolio import rank_candidates
+    frames, probs, start = _universe()
+    adv = pd.Series(1e9, index=probs.columns)
+    acc = pd.Series(0.40, index=probs.columns)
+    base = pd.Series(0.60, index=probs.columns)            # every model below baseline
+    row = probs.loc[start]
+    assert rank_candidates(frames, start, row, adv, acc, base, max_risk=10) == []
+    loose = rank_candidates(frames, start, row, adv, acc, base, max_risk=10,
+                            require_edge=False)
+    assert set(loose) == {"A", "B", "D"}
+
+
+def test_time_split_fit_subsamples_training_rows():
+    from portfolio import time_split_fit
+    frames = {f"S{i}": synthetic(seed=i) for i in range(3)}
+    _, _, info = time_split_fit(frames, 1, 0.6, "fast", max_train_rows=200)
+    assert info["n_train_rows"] == 200
+    assert info["test_start"] > info["cut_date"]

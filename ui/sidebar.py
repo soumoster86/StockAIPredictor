@@ -142,17 +142,13 @@ def render_sidebar():
                 if side_df.empty:
                     st.caption("No scores yet — try another batch.")
                 else:
-                    picks = rank_buy_candidates(
-                        side_df, min_prob=0.55, max_risk=8.0,
-                        require_edge=True, top_n=5,
-                    )
+                    picks = rank_buy_candidates(side_df, max_risk=8.0, top_n=5)
                     if picks.empty:
                         picks = rank_buy_candidates(
-                            side_df, min_prob=0.55, max_risk=10.0,
-                            require_edge=False, top_n=5,
+                            side_df, max_risk=10.0, min_turnover_cr=0, top_n=5,
                         )
                     if picks.empty:
-                        st.caption("No BUY screens in scored set yet.")
+                        st.caption("No candidates in the scored set yet.")
                     else:
                         for _, row in picks.iterrows():
                             label = (

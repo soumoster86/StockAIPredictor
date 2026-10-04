@@ -22,6 +22,8 @@ from journal import (
     scorecard,
 )
 from model import (
+    SCREEN_REVIEW_DAYS,
+    SCREEN_TOP_PCT,
     backtest,
     explain_prediction,
     global_model_available,
@@ -405,18 +407,20 @@ def render_scanner_tab(ctx):
 
     with st.expander("How Buy Score is calculated", expanded=False):
         st.markdown(
-            """
+            f"""
             | Factor | Weight (approx.) | What it rewards |
             |--------|------------------|-----------------|
-            | **Probability Up** | ~50% | Higher chance of a meaningful 1-day up move |
+            | **Probability Up** | ~50% | Higher chance of a meaningful up move over 10 trading days |
             | **Model edge** | ~20% | Test accuracy beating the majority baseline |
             | **Lower risk** | ~12% | Calmer vol / ATR / drawdown score |
             | **Reward : risk** | ~12% | ATR/structure trade plan with better R:R |
             | **Near support** | ~6% | Price sitting closer to a recent swing floor |
 
-            Only names with a **BUY** screen call (prob above the default entry
-            threshold, usually 0.55) enter the shortlist. Optional filters below
-            can require edge and cap risk.
+            The shortlist takes names in the **top {SCREEN_TOP_PCT:.0%}** of the
+            liquid, scored universe by probability, then ranks them by Buy Score.
+            Review it about every **{SCREEN_REVIEW_DAYS} trading days** — faster
+            turnover costs more than the signal earns. Optional filters below
+            can require edge, cap risk, or switch to the old absolute cutoff.
             """
         )
 
@@ -570,11 +574,23 @@ def render_scanner_tab(ctx):
 
     # ---- Filters for "best buys" shortlist ----
     section_header("Shortlist filters")
-    f1, f2, f3, f4 = st.columns(4)
-    min_prob = f1.slider(
-        "Min probability", 0.50, 0.80, 0.55, 0.01,
-        help="Only BUY screens at or above this model probability.",
+    entry_rule = st.radio(
+        "Entry rule", ["Top % of universe (recommended)", "Absolute probability"],
+        horizontal=True, help=HELP["entry_rule"],
     )
+    f1, f2, f3, f4 = st.columns(4)
+    if entry_rule.startswith("Top"):
+        top_pct = f1.slider(
+            "Top % by probability", 1, 20, int(round(SCREEN_TOP_PCT * 100)), 1,
+            help=HELP["entry_rule"],
+        ) / 100.0
+        min_prob = 0.0
+    else:
+        top_pct = None
+        min_prob = f1.slider(
+            "Min probability", 0.40, 0.80, 0.55, 0.01,
+            help="Only BUY screens at or above this model probability.",
+        )
     max_risk = f2.slider(
         "Max risk score", 3.0, 10.0, 8.0, 0.5,
         help="Drop names riskier than this (1 calm → 10 wild).",
@@ -582,8 +598,10 @@ def render_scanner_tab(ctx):
     top_n = f3.slider("Show top N", 3, 20, 8, 1)
     require_edge = f4.checkbox(
         "Require model edge",
-        value=True,
-        help="Keep only names where test accuracy ≥ majority baseline.",
+        value=False,
+        help="Keep only names where test accuracy ≥ majority baseline. Off by "
+             "default: with a ~40% base rate, always guessing 'no' scores ~60%, "
+             "so this filter rejects almost every stock.",
     )
     g1, g2, g3 = st.columns([1, 1, 2])
     min_turnover = g1.number_input(
@@ -615,14 +633,15 @@ def render_scanner_tab(ctx):
         min_turnover_cr=min_turnover,
         exclude_tight_band=skip_tight,
         exclude_symbols=list(surveillance),
+        top_pct=top_pct,
     )
 
     section_header("Top picks to open long")
     if picks.empty:
         st.info(
-            "No names pass the filters right now. Try lowering min probability, "
-            "raising max risk, or unticking “Require model edge”. "
-            "A empty shortlist is useful information too."
+            "No names pass the filters right now. Try a larger top %, raising "
+            "max risk, lowering the traded-value floor, or unticking "
+            "“Require model edge”. An empty shortlist is useful information too."
         )
     else:
         def _jump_to(stock_name):
@@ -640,7 +659,9 @@ def render_scanner_tab(ctx):
 
         st.caption(
             f"**{len(picks)}** candidate(s) after filters · sorted by Buy Score. "
-            "Tap **Open full analysis** before any decision."
+            f"Review about every {SCREEN_REVIEW_DAYS} trading days. "
+            "Tap **Open full analysis** before any decision.",
+            help=HELP["review_cadence"],
         )
 
         # Compact table of the shortlist
@@ -897,7 +918,9 @@ def _render_portfolio_backtest():
             f"{HELP['portfolio_backtest']} Model fitted on data up to "
             f"**{p['cut_date']}** only; tested **{s['start']} → {s['end']}**. "
             f"Every {p['rebalance_days']} trading days: top {p['top_n']} by Buy Score "
-            f"(screener filters), equal weight, next-open fills, NSE costs, "
+            + (f"from the top {1 - p['min_quantile']:.0%} of the liquid universe "
+               if p.get('min_quantile') else f"with probability > {p['min_prob']:.2f} ")
+            + f"({p.get('horizon', 1)}-day model), equal weight, next-open fills, NSE costs, "
             f"traded value ≥ ₹{p['min_turnover_cr']:g} Cr/day, cash at "
             f"{p['risk_free_rate']:.0%}/yr."
         )

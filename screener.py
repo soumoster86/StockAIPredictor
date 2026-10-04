@@ -23,7 +23,7 @@ from model import (
     compute_trade_plan,
     find_support_resistance,
     global_model_available,
-    load_global_model,
+    load_screen_model,
     quick_scan,
     quick_scan_global,
 )
@@ -129,7 +129,7 @@ def score_batch(batch_items, index_close=None, global_bundle=None, price_map=Non
         price_map = fetch_many([sym for _, sym in batch_items]) or {}
 
     if global_bundle is None and global_model_available():
-        global_bundle = load_global_model(1)
+        global_bundle = load_screen_model()
 
     for name, sym in batch_items:
         try:
@@ -139,9 +139,9 @@ def score_batch(batch_items, index_close=None, global_bundle=None, price_map=Non
                 continue
             d = add_features(raw, index_close=index_close)
             if global_bundle is not None:
+                # No per-stock fallback: a 1-day tree's probability isn't
+                # comparable with the global model's, and ranking is relative.
                 scan = quick_scan_global(d, bundle=global_bundle)
-                if scan is None:
-                    scan = quick_scan(d)
             else:
                 scan = quick_scan(d)
             if scan is None:
@@ -188,7 +188,7 @@ def scan_universe(stock_items, batch_size=SCAN_BATCH, max_symbols=None,
         items = items[: max(int(max_symbols), 0)]
 
     index_close = fetch_index()
-    bundle = load_global_model(1) if global_model_available() else None
+    bundle = load_screen_model() if global_model_available() else None
     all_rows, fail_map = [], {}
     offset = 0
     total = len(items)

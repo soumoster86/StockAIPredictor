@@ -48,6 +48,8 @@ from execution import (
 )
 from model import (
     DEFAULT_THRESHOLDS,
+    SCREEN_REVIEW_DAYS,
+    SCREEN_TOP_PCT,
     buy_score,
     compute_risk_score,
     compute_trade_plan,
@@ -58,11 +60,12 @@ from model import (
 )
 
 DEFAULT_TOP_N = 10
-DEFAULT_REBALANCE_DAYS = 5
+DEFAULT_REBALANCE_DAYS = SCREEN_REVIEW_DAYS
 DEFAULT_CAPITAL = 1_000_000
 DEFAULT_MIN_TURNOVER = 1e7     # ₹1 Cr/day median traded value
 DEFAULT_MAX_RISK = 8.0         # same cap as rank_buy_candidates
 DEFAULT_MIN_PROB = DEFAULT_THRESHOLDS[0]
+DEFAULT_MIN_QUANTILE = 1.0 - SCREEN_TOP_PCT   # the app's relative shortlist rule
 HOLD_BUFFER = 2                # keep a holding while it ranks inside top N × this
 MIN_ACCURACY_ROWS = 60         # resolved predictions before accuracy counts
 MIN_HISTORY = 260              # rows before a stock can be scored (1y of S/R)
@@ -77,13 +80,15 @@ SURVIVORSHIP_NOTE = (
 # Honest model fit
 # ---------------------------------------------------------------------------
 
-def time_split_fit(frames, horizon=1, train_frac=0.6, model_type="fast"):
+def time_split_fit(frames, horizon=1, train_frac=0.6, model_type="fast",
+                   max_train_rows=None, seed=0):
     """Fit a pooled model on the earliest `train_frac` of trading days.
 
     Returns (predictor, scaler, info). info["test_start"] is the first day
     the simulation may trade: after the cut plus a purge of 2·horizon + 5
     calendar days, so labels of the last training rows (which look `horizon`
-    trading days ahead) end before testing begins."""
+    trading days ahead) end before testing begins. `max_train_rows`
+    randomly subsamples the training rows to bound memory and time."""
     target_col = f"Target_{horizon}"
     X, y, day_ids, n_stocks = pool_training_data(frames, target_col)
     if X is None or len(X) < 500:
@@ -93,6 +98,11 @@ def time_split_fit(frames, horizon=1, train_frac=0.6, model_type="fast"):
     cut_i = min(max(int(len(unique_days) * train_frac), 1), len(unique_days) - 1)
     cut_day = int(unique_days[cut_i - 1])
     train = day_ids <= cut_day
+    if max_train_rows and train.sum() > max_train_rows:
+        keep = np.random.default_rng(seed).choice(
+            np.flatnonzero(train), size=int(max_train_rows), replace=False)
+        train = np.zeros(len(train), bool)
+        train[np.sort(keep)] = True
 
     scaler = StandardScaler().fit(X[train])
     predictor = make_fast_predictor() if model_type == "fast" else make_predictor(model_type)
@@ -109,6 +119,37 @@ def time_split_fit(frames, horizon=1, train_frac=0.6, model_type="fast"):
         "model": getattr(predictor, "name", model_type),
     }
     return predictor, scaler, info
+
+
+def build_slim_frames(symbols, index_close, horizons=(1,), batch_size=60,
+                      min_rows=400, log=print):
+    """Fetch + feature-engineer every symbol in batches, keeping only the
+    columns the backtest needs as float32 — the full universe since 2010
+    otherwise needs several GB of RAM."""
+    import time
+
+    from data import add_features, fetch_many
+    keep = (["Open", "High", "Low", "Close", "Volume"] + list(FEATURES)
+            + [f"Target_{h}" for h in horizons])
+    frames = {}
+    for i in range(0, len(symbols), batch_size):
+        chunk = symbols[i:i + batch_size]
+        try:
+            batch = fetch_many(chunk)
+        except Exception as e:  # one bad batch shouldn't sink the run
+            log(f"  batch {i}: {str(e)[:60]}")
+            continue
+        for sym in chunk:
+            raw = batch.get(sym)
+            if raw is None or raw.empty or len(raw) < min_rows:
+                continue
+            try:
+                frames[sym] = add_features(raw, index_close=index_close)[keep].astype("float32")
+            except Exception:
+                pass
+        log(f"  {i + len(chunk)}/{len(symbols)} fetched, {len(frames)} usable")
+        time.sleep(0.4)
+    return frames
 
 
 def score_frames(frames, predictor, scaler):
@@ -154,18 +195,30 @@ def trailing_accuracy(frames, probs, start, horizon=1):
 
 def rank_candidates(frames, d, probs_row, adv_row, acc_row, base_row, held=(),
                     top_n=DEFAULT_TOP_N, min_prob=DEFAULT_MIN_PROB,
-                    max_risk=DEFAULT_MAX_RISK, min_turnover=DEFAULT_MIN_TURNOVER):
+                    max_risk=DEFAULT_MAX_RISK, min_turnover=DEFAULT_MIN_TURNOVER,
+                    min_quantile=None, require_edge=True):
     """Screener ranking at date d using only data known at d's close.
-    Returns symbols sorted by Buy Score (best first)."""
+
+    Entry is absolute (probability > `min_prob`, as the app's screener) or,
+    with `min_quantile`, relative: probability in the top (1 − q) of that
+    day's liquid universe — robust to the label's base rate drifting away
+    from 50%. Returns symbols sorted by Buy Score (best first)."""
     liquid = adv_row.reindex(probs_row.index) >= min_turnover
-    eligible = probs_row[(probs_row > min_prob) & liquid]
+    if min_quantile is not None:
+        pool_probs = probs_row[liquid]
+        if pool_probs.empty:
+            return []
+        min_prob = float(pool_probs.quantile(min_quantile))
+        eligible = probs_row[(probs_row >= min_prob) & liquid]
+    else:
+        eligible = probs_row[(probs_row > min_prob) & liquid]
     eligible = eligible.sort_values(ascending=False)
     pool = list(dict.fromkeys(list(eligible.index[:3 * top_n])
                               + [h for h in held if h in eligible.index]))
     scored = []
     for sym in pool:
         acc, base = acc_row.get(sym, np.nan), base_row.get(sym, np.nan)
-        if np.isfinite(acc) and np.isfinite(base) and acc < base:
+        if require_edge and np.isfinite(acc) and np.isfinite(base) and acc < base:
             continue  # require_edge, as rank_buy_candidates does
         hist = frames[sym].loc[:d]
         if len(hist) < MIN_HISTORY:
@@ -208,7 +261,8 @@ def simulate_portfolio(frames, probs, start, end=None, capital=DEFAULT_CAPITAL,
                        top_n=DEFAULT_TOP_N, rebalance_days=DEFAULT_REBALANCE_DAYS,
                        min_prob=DEFAULT_MIN_PROB, max_risk=DEFAULT_MAX_RISK,
                        min_turnover=DEFAULT_MIN_TURNOVER, horizon=1,
-                       rf=RISK_FREE_RATE, buffer=HOLD_BUFFER, progress=None):
+                       rf=RISK_FREE_RATE, buffer=HOLD_BUFFER, progress=None,
+                       min_quantile=None, require_edge=True):
     """Run the screener as a portfolio from `start` to `end`.
 
     Returns (equity Series, trades DataFrame, stats dict)."""
@@ -290,7 +344,8 @@ def simulate_portfolio(frames, probs, start, end=None, capital=DEFAULT_CAPITAL,
             ranked = rank_candidates(
                 frames, d, p_cal.loc[d].dropna(), adv.loc[d], acc.loc[d], base.loc[d],
                 held=list(shares), top_n=top_n, min_prob=min_prob,
-                max_risk=max_risk, min_turnover=min_turnover)
+                max_risk=max_risk, min_turnover=min_turnover,
+                min_quantile=min_quantile, require_edge=require_edge)
             target = select_portfolio(ranked, list(shares), top_n, buffer)
             pending_sells = {s for s in shares if s not in target}
             pending_buys = {s: value / top_n for s in target if s not in shares}
