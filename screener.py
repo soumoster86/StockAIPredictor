@@ -16,6 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from data import add_features, fetch_index, fetch_many
+from execution import price_band_hint, traded_value
 from model import (
     buy_score,
     compute_risk_score,
@@ -41,8 +42,35 @@ DEFAULT_MAX_AGE_HOURS = 48
 RESULT_COLUMNS = [
     "Name", "Symbol", "Price", "Day", "Screen", "Probability Up", "Rating",
     "Test Acc", "Baseline", "Model", "Risk", "Reward Risk",
-    "To Support", "To Resistance", "Buy Score",
+    "To Support", "To Resistance", "Traded Value", "Price Band", "Buy Score",
 ]
+# Optional user-maintained list of scrips under exchange surveillance
+# (ASM / GSM / trade-to-trade). Columns: Symbol[, Reason]. See README.
+SURVEILLANCE_FILE = Path(__file__).resolve().parent / "surveillance.csv"
+
+
+def load_surveillance(path=SURVEILLANCE_FILE):
+    """{symbol: reason} from surveillance.csv; empty when the file is absent.
+    Bare NSE codes ('XYZ') are normalized to Yahoo form ('XYZ.NS')."""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path, encoding="utf-8-sig")
+    except Exception:
+        return {}
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    if "symbol" not in df.columns:
+        return {}
+    out = {}
+    for _, r in df.iterrows():
+        sym = str(r["symbol"]).strip().upper()
+        if not sym or sym == "NAN":
+            continue
+        if "." not in sym and not sym.startswith("^"):
+            sym += ".NS"
+        out[sym] = str(r.get("reason", "surveillance") or "surveillance")
+    return out
 
 
 def normalize_stock_items(stock_items):
@@ -126,6 +154,7 @@ def score_batch(batch_items, index_close=None, global_bundle=None, price_map=Non
             prev = float(d["Close"].iloc[-2])
             to_sup = (price / s["support"] - 1) if s.get("support") else None
             to_res = (s["resistance"] / price - 1) if s.get("resistance") else None
+            tv = traded_value(d)
             rr = plan.get("reward_risk")
             prob = scan["probability"]
             rows.append({
@@ -139,6 +168,8 @@ def score_batch(batch_items, index_close=None, global_bundle=None, price_map=Non
                 "Reward Risk": rr,
                 "To Support": to_sup,
                 "To Resistance": to_res,
+                "Traded Value": tv / 1e7 if tv == tv else None,   # ₹ crore/day
+                "Price Band": price_band_hint(d),
                 "Buy Score": buy_score(
                     prob, scan["accuracy"], scan["baseline"],
                     r["score"], rr, to_sup,

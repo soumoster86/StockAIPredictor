@@ -4,7 +4,14 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from execution import DEFAULT_NOTIONAL, cost_profile_for
+from execution import (
+    DEFAULT_NOTIONAL,
+    MAX_PARTICIPATION,
+    TIGHT_BAND,
+    cost_profile_for,
+    price_band_hint,
+    traded_value,
+)
 from journal import (
     MAX_HOLD_DAYS,
     append_signal,
@@ -24,6 +31,7 @@ from model import (
     rank_buy_candidates,
     rating_from_prob,
 )
+from screener import load_surveillance
 from ui.help_text import HELP
 from ui.services import (
     SCAN_BATCH,
@@ -222,7 +230,7 @@ def render_prediction_tab(ctx):
             "Use Walk-Forward for a stricter check."
         )
         if metrics.get("oos_note"):
-            st.info(metrics["oos_note"])
+            st.info(metrics["oos_note"] + " " + HELP["survivorship"])
     else:
         _src = f"Per-stock {model_type} model."
     st.caption(
@@ -577,6 +585,26 @@ def render_scanner_tab(ctx):
         value=True,
         help="Keep only names where test accuracy ≥ majority baseline.",
     )
+    g1, g2, g3 = st.columns([1, 1, 2])
+    min_turnover = g1.number_input(
+        "Min traded value (₹ Cr/day)", min_value=0.0, max_value=500.0, value=1.0,
+        step=0.5, help=HELP["traded_value"],
+    )
+    skip_tight = g2.checkbox(
+        "Skip 2%/5% band stocks", value=True, help=HELP["price_band"],
+    )
+    surveillance = load_surveillance()
+    if surveillance:
+        g3.caption(
+            f"Excluding **{len(surveillance)}** scrips listed in `surveillance.csv` "
+            "(ASM / GSM / trade-to-trade)."
+        )
+    if "Traded Value" not in scan_df.columns:
+        g3.caption(
+            "These rankings predate the liquidity columns — rerun "
+            "`scripts/precompute_rankings.py` (or a live scan) to apply the "
+            "traded-value and price-band filters."
+        )
 
     picks = rank_buy_candidates(
         scan_df,
@@ -584,6 +612,9 @@ def render_scanner_tab(ctx):
         max_risk=max_risk,
         require_edge=require_edge,
         top_n=top_n,
+        min_turnover_cr=min_turnover,
+        exclude_tight_band=skip_tight,
+        exclude_symbols=list(surveillance),
     )
 
     section_header("Top picks to open long")
@@ -616,8 +647,8 @@ def render_scanner_tab(ctx):
         pick_view = picks[[
             c for c in [
                 "Rank", "Symbol", "Name", "Buy Score", "Probability Up",
-                "Screen", "Risk", "Reward Risk", "To Support", "Test Acc",
-                "Baseline", "Day", "Price",
+                "Screen", "Risk", "Reward Risk", "To Support", "Traded Value",
+                "Test Acc", "Baseline", "Day", "Price",
             ] if c in picks.columns
         ]]
         _pv = style_map(pick_view.style, color_signal, ["Screen"])
@@ -636,6 +667,8 @@ def render_scanner_tab(ctx):
                 "Risk": st.column_config.NumberColumn("Risk /10", format="%.1f"),
                 "Reward Risk": st.column_config.NumberColumn("R:R", format="%.2f"),
                 "To Support": st.column_config.NumberColumn(format="percent"),
+                "Traded Value": st.column_config.NumberColumn(
+                    "₹ Cr/day", format="%.1f", help=HELP["traded_value"]),
                 "Test Acc": st.column_config.NumberColumn(format="percent"),
                 "Baseline": st.column_config.NumberColumn(format="percent"),
                 "Day": st.column_config.NumberColumn(format="percent"),
@@ -665,7 +698,8 @@ def render_scanner_tab(ctx):
             c for c in [
                 "Symbol", "Name", "Buy Score", "Screen", "Probability Up",
                 "Rating", "Risk", "Reward Risk", "To Support", "To Resistance",
-                "Test Acc", "Baseline", "Day", "Price", "Model",
+                "Traded Value", "Price Band", "Test Acc", "Baseline", "Day", "Price",
+                "Model",
             ] if c in view_df.columns
         ]
         _scan_styled = style_map(view_df[display_cols].style, color_signal, ["Screen"])
@@ -694,6 +728,10 @@ def render_scanner_tab(ctx):
                 "To Resistance": st.column_config.NumberColumn(
                     format="percent", help=HELP["scan_to_resistance"],
                 ),
+                "Traded Value": st.column_config.NumberColumn(
+                    "₹ Cr/day", format="%.1f", help=HELP["traded_value"]),
+                "Price Band": st.column_config.NumberColumn(
+                    "Band", format="percent", help=HELP["price_band"]),
             },
         )
 
@@ -800,7 +838,9 @@ def render_plan_tab(ctx):
         help=HELP["risk_per_trade"],
     )
 
-    ps = position_size(capital, risk_pct, plan['entry'], plan['stop'])
+    adv = traded_value(ctx["data"])
+    band = price_band_hint(ctx["data"])
+    ps = position_size(capital, risk_pct, plan['entry'], plan['stop'], adv_value=adv)
     if ps is None or ps['shares'] == 0:
         st.warning(
             "Stop is too close to entry (or capital too small) to size a "
@@ -818,6 +858,20 @@ def render_plan_tab(ctx):
                 "can buy — size was capped at what's affordable, so your "
                 "actual risk is below the chosen percentage."
             )
+        if ps['capped_by_liquidity']:
+            st.warning(
+                f"⚠️ Capped at {ps['max_liquid_shares']:,} shares — "
+                f"{MAX_PARTICIPATION:.0%} of the {currency}{adv / 1e7:,.2f} Cr this stock "
+                "trades on a typical day. A bigger order would move the price "
+                "against you and could be hard to exit."
+            )
+        if band is not None and band <= TIGHT_BAND:
+            st.warning(
+                f"⚠️ This stock recently locked at a **{band:.0%} circuit**. "
+                + HELP["price_band"]
+            )
+        if adv == adv:
+            st.caption(f"Typical daily traded value: {currency}{adv / 1e7:,.2f} Cr.")
         st.caption(
             f"Formula: ({currency}{capital:,.0f} × {risk_pct:.2f}%) ÷ "
             f"({currency}{plan['entry']:,.2f} − {currency}{plan['stop']:,.2f}) "

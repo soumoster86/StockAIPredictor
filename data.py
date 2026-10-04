@@ -1,6 +1,11 @@
 # =============================
 # data.py
 # =============================
+import os
+from datetime import datetime
+from datetime import time as clock
+from zoneinfo import ZoneInfo
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -18,6 +23,18 @@ VOL_THRESHOLD_K = 0.10    # threshold = k · Vol20 · sqrt(h); 0.10 keeps the
                           # universe-median base rate ≈ the old flat band
 LABEL_DEADBAND_K = 0.05   # dead-band half-width = k · Vol20 · sqrt(h)
 INDEX_SYMBOL = "^NSEI"   # NIFTY 50 — market context for Indian stocks
+# History start. 2010 covers several regimes (2011 and 2015-16 drawdowns,
+# 2020 crash, 2021-24 bull run) instead of one. Override with DATA_START.
+DATA_START = os.environ.get("DATA_START", "2010-01-01")
+
+# Daily bars are only final after the session closes (plus a buffer for
+# the closing auction / Yahoo's settle). Before that, yfinance returns
+# today's still-forming candle as if it were a finished day.
+_SESSIONS = {
+    "india": (ZoneInfo("Asia/Kolkata"), clock(9, 15), clock(16, 0)),
+    "us": (ZoneInfo("America/New_York"), clock(9, 30), clock(16, 30)),
+}
+_INDIA_INDICES = ("^NSE", "^CRSLDX", "^BSESN", "^CNX")
 
 # Single source of truth for model features. All are scale-free.
 FEATURES = [
@@ -42,7 +59,7 @@ def _download_with_retry(retries=2, backoff=0.8, **kwargs):
     import time
     for attempt in range(retries + 1):
         try:
-            return yf.download(start="2020-01-01", auto_adjust=True,
+            return yf.download(start=DATA_START, auto_adjust=True,
                                progress=False, **kwargs)
         except Exception:
             if attempt == retries:
@@ -51,8 +68,44 @@ def _download_with_retry(retries=2, backoff=0.8, **kwargs):
     return None
 
 
+def market_session(symbol):
+    """(timezone, open, final-bar cutoff) for the symbol's exchange, or None
+    when unknown (other exchanges are left untouched)."""
+    s = str(symbol or "").upper()
+    if s.endswith((".NS", ".BO")) or s.startswith(_INDIA_INDICES):
+        return _SESSIONS["india"]
+    if "." not in s and not s.startswith("^"):
+        return _SESSIONS["us"]          # plain tickers are US listings
+    return None
+
+
+def market_is_open(symbol, now=None):
+    """True while today's session for `symbol` is still forming."""
+    sess = market_session(symbol)
+    if sess is None:
+        return False
+    tz, open_t, cutoff = sess
+    local = (now or datetime.now(tz)).astimezone(tz)
+    return local.weekday() < 5 and open_t <= local.time() < cutoff
+
+
+def drop_incomplete_bar(data, symbol, now=None):
+    """Drop today's bar while the session is still open (or the bar is
+    dated in the future), so features never see a half-formed candle."""
+    sess = market_session(symbol)
+    if sess is None or data is None or data.empty:
+        return data
+    tz, _, cutoff = sess
+    local = (now or datetime.now(tz)).astimezone(tz)
+    last = pd.Timestamp(data.index[-1]).date()
+    if last > local.date() or (last == local.date() and local.time() < cutoff):
+        return data.iloc[:-1]
+    return data
+
+
 def fetch_data(symbol):
-    """Download daily OHLCV data for one symbol. Empty DataFrame on failure."""
+    """Download daily OHLCV data for one symbol. Empty DataFrame on failure.
+    Today's bar is dropped while its session is still open."""
     data = _download_with_retry(tickers=symbol)
     if data is None or data.empty:
         return pd.DataFrame()
@@ -60,7 +113,7 @@ def fetch_data(symbol):
     if isinstance(data.columns, pd.MultiIndex):
         data.columns = data.columns.get_level_values(0)
 
-    return data
+    return drop_incomplete_bar(data, symbol)
 
 
 def fetch_many(symbols):
@@ -84,7 +137,7 @@ def fetch_many(symbols):
             df = raw[s].dropna(how="all")
         except KeyError:  # ticker entirely absent from the response
             df = pd.DataFrame()
-        out[s] = df if df is not None and not df.empty else pd.DataFrame()
+        out[s] = drop_incomplete_bar(df, s) if df is not None and not df.empty else pd.DataFrame()
     return out
 
 

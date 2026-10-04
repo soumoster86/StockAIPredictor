@@ -21,7 +21,9 @@ except ImportError:
 from data import FEATURES, HORIZONS
 from execution import (
     DEFAULT_NOTIONAL,
+    MAX_PARTICIPATION,
     RISK_FREE_RATE,
+    TIGHT_BAND,
     daily_rate,
     equity_stats,
     locked_sessions,
@@ -910,11 +912,15 @@ def compute_trade_plan(data, support=None, resistance=None,
     }
 
 
-def position_size(capital, risk_pct, entry, stop):
+def position_size(capital, risk_pct, entry, stop, adv_value=None,
+                  max_participation=MAX_PARTICIPATION):
     """How many shares to buy so that hitting the stop loses exactly
     `risk_pct` of capital. The professional formula:
         shares = (capital × risk%) / (entry − stop)
-    Capped so the position never costs more than the available capital."""
+    Capped so the position never costs more than the available capital,
+    and — when `adv_value` (median daily traded value) is known — never more
+    than `max_participation` of a day's trading, so the order can actually
+    be filled without moving the price."""
     risk_amount = capital * risk_pct / 100.0
     risk_per_share = entry - stop
     if risk_per_share <= 0 or entry <= 0 or capital <= 0:
@@ -925,6 +931,13 @@ def position_size(capital, risk_pct, entry, stop):
     capped = shares > max_affordable
     shares = min(shares, max_affordable)
 
+    capped_liquidity = False
+    max_liquid = None
+    if adv_value is not None and np.isfinite(adv_value) and adv_value > 0:
+        max_liquid = int(adv_value * max_participation // entry)
+        if shares > max_liquid:
+            shares, capped_liquidity = max_liquid, True
+
     position_value = shares * entry
     return {
         'shares': shares,
@@ -933,6 +946,8 @@ def position_size(capital, risk_pct, entry, stop):
         'position_value': float(position_value),
         'pct_of_capital': float(position_value / capital),
         'capped_by_capital': capped,
+        'capped_by_liquidity': capped_liquidity,
+        'max_liquid_shares': max_liquid,
     }
 
 
@@ -1122,10 +1137,16 @@ def buy_score(probability, accuracy=None, baseline=None, risk=None,
 
 
 def rank_buy_candidates(scan_df, min_prob=0.55, max_risk=8.0,
-                        require_edge=True, top_n=10):
+                        require_edge=True, top_n=10, min_turnover_cr=1.0,
+                        exclude_tight_band=True, exclude_symbols=None):
     """Filter and rank a scan DataFrame into best long candidates.
 
     Expects columns produced by `run_scan` (Screen, Probability Up, …).
+    Tradability filters apply when their columns are present (older
+    precomputed files lack them): `min_turnover_cr` drops names trading less
+    than that many ₹ crore a day; `exclude_tight_band` drops names whose
+    recent circuit locks show a 2%/5% band (surveillance / trade-to-trade);
+    `exclude_symbols` drops a user-supplied surveillance list.
     Returns a copy sorted by Buy Score descending (empty if none qualify).
     """
     if scan_df is None or len(scan_df) == 0:
@@ -1155,6 +1176,14 @@ def rank_buy_candidates(scan_df, min_prob=0.55, max_risk=8.0,
         buys = buys[buys["Risk"] <= float(max_risk)]
     if require_edge and "Test Acc" in buys.columns and "Baseline" in buys.columns:
         buys = buys[buys["Test Acc"] >= buys["Baseline"]]
+    if min_turnover_cr and "Traded Value" in buys.columns:
+        tv = pd.to_numeric(buys["Traded Value"], errors="coerce").fillna(0)
+        buys = buys[tv >= float(min_turnover_cr)]
+    if exclude_tight_band and "Price Band" in buys.columns:
+        band = pd.to_numeric(buys["Price Band"], errors="coerce")
+        buys = buys[~(band <= TIGHT_BAND)]
+    if exclude_symbols and "Symbol" in buys.columns:
+        buys = buys[~buys["Symbol"].isin(set(exclude_symbols))]
 
     if buys.empty:
         return buys

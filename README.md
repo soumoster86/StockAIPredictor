@@ -223,7 +223,14 @@ with the full analysis signal.
 
 ### 1. Fetch Market Data
 
-Daily OHLCV data is downloaded from Yahoo Finance through `yfinance`.
+Daily OHLCV data is downloaded from Yahoo Finance through `yfinance`,
+starting **2010-01-01** so models and walk-forward folds see several market
+regimes (override with the `DATA_START` environment variable).
+
+While the exchange is open (NSE 09:15–16:00 IST, US 09:30–16:30 ET), Yahoo
+returns today's still-forming candle as a daily bar. The app drops it, so
+features and signals always use the last *completed* close; the header says
+when the market is open.
 
 For Indian stocks, the app also attempts to fetch NIFTY 50 data through:
 
@@ -568,6 +575,26 @@ The tests cover:
 
 ---
 
+## Liquidity and Surveillance Filters
+
+The screener shortlist skips names you couldn't realistically trade:
+
+- **Traded value** — median daily value traded over 20 sessions; default
+  minimum ₹1 Cr/day (adjustable).
+- **Price band** — inferred from the stock's most recent circuit lock. A 2% or
+  5% band usually means ASM/GSM surveillance or trade-to-trade settlement.
+- **`surveillance.csv`** (optional) — drop a file next to `app.py` with a
+  `Symbol` column (and optional `Reason`) to exclude scrips on NSE's current
+  ASM / GSM / trade-to-trade lists. Bare NSE codes are accepted
+  (`XYZ` → `XYZ.NS`). NSE publishes these lists on its *Surveillance* pages;
+  refresh the file when they change.
+
+Position sizing in the Plan tab is also capped at 2% of a typical day's traded
+value, so the suggested order can be filled without moving the price.
+
+Precomputed rankings generated before these columns existed skip the filters
+until `scripts/precompute_rankings.py` is rerun.
+
 ## Custom Stock Universe
 
 The **default app watchlist** is the full NSE-style dump:
@@ -618,8 +645,12 @@ the default list for that session (scanner still respects the 80-name cap).
   single-price sessions. Costs assume a ₹1 lakh trade at a zero-brokerage
   delivery broker.
 - Backtests ignore taxes (STCG/LTCG).
-- The portfolio backtest uses today's listed universe, so it carries
-  survivorship bias (delisted names are missing) and has no sector caps.
+- **Survivorship bias:** the watchlist, the global model's training pool and
+  the portfolio backtest all use stocks listed *today*. Companies that were
+  delisted or collapsed are missing, which flatters pooled accuracy and
+  backtests. A point-in-time universe (e.g. built from NSE bhavcopy
+  archives) would remove this; the UI discloses it next to global-model
+  metrics. The portfolio backtest also has no sector caps.
 - Long-horizon labels overlap, so long-horizon accuracy can look optimistic.
 - yfinance data can be delayed, revised, missing, or temporarily rate-limited.
 - Streamlit Community Cloud storage is ephemeral, so journal data should be

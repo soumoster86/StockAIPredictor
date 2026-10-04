@@ -37,11 +37,13 @@ from sklearn.preprocessing import StandardScaler
 from data import FEATURES
 from execution import (
     RISK_FREE_RATE,
+    TIGHT_BAND,
     TRADING_DAYS,
     cost_profile_for,
     daily_rate,
     equity_stats,
     locked_sessions,
+    price_band_hint,
     side_costs,
 )
 from model import (
@@ -171,6 +173,9 @@ def rank_candidates(frames, d, probs_row, adv_row, acc_row, base_row, held=(),
         risk = compute_risk_score(hist)["score"]
         if risk > max_risk:
             continue
+        band = price_band_hint(hist)
+        if band is not None and band <= TIGHT_BAND:
+            continue  # surveillance-style 2%/5% band, as the screener excludes
         sr = find_support_resistance(hist)
         plan = compute_trade_plan(hist, sr["support"], sr["resistance"])
         price = float(hist["Close"].iloc[-1])

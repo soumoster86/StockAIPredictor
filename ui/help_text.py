@@ -47,5 +47,8 @@ HELP = {
     "plan_backtest": "Simulates exactly what the Plan tab tells you to do: on each BUY signal, that day's stop and target, filled at the next open and exited at the stop, the target, or after 20 trading days — whichever comes first. One trade at a time.",
     "profit_factor": "Total gains from winning trades ÷ total losses from losing trades. Above 1 = the winners paid for the losers; 1.5+ is solid.",
     "portfolio_backtest": "Runs the screener as a real portfolio on years the model never saw: every week, buy the top names by Buy Score, sell names that drop out, pay real costs — and compare with simply owning the index.",
+    "traded_value": "Median daily traded value (price × shares traded) over the last 20 sessions, in ₹ crore. Below ~₹1 Cr/day, spreads are wide, your own order moves the price, and you may not be able to exit when you want.",
+    "price_band": "The stock's circuit band, inferred from its most recent locked session (it traded at one price after moving exactly ±2/5/10/20%). A 2% or 5% band usually means exchange surveillance (ASM/GSM), trade-to-trade settlement, or a thinly traded scrip. Blank = no recent lock (most liquid names).",
+    "survivorship": "The global model was trained on stocks that are listed today. Companies that were delisted or collapsed are missing from its history, so its accuracy — and any pooled backtest — looks better than live trading will.",
     "use_global": "A global model is available. Keep it on for pooled-data predictions, or untick to train a per-stock model on the fly and compare the two in the Walk-Forward tab. Global accuracy on this page is indicative, not fully out-of-sample.",
 }

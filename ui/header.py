@@ -2,7 +2,7 @@
 import plotly.graph_objects as go
 import streamlit as st
 
-from data import FEATURES
+from data import FEATURES, market_is_open
 from ui.help_text import HELP
 from ui.styles import RED
 from ui.theme import (
@@ -65,7 +65,12 @@ def render_header(display_name, symbol, data, predictor, scaler, thresholds,
             delta=f"{day_change:+.2f}%",
             help=HELP["last_close"],
         )
-        st.caption(f"As of **{data.index[-1]:%d %b %Y}**")
+        st.caption(f"As of **{data.index[-1]:%d %b %Y}** close")
+        if market_is_open(symbol):
+            st.caption(
+                "🟢 Market open — today's candle is still forming, so it's "
+                "excluded. Signals use the last completed close."
+            )
 
     with c2:
         _spark = data['Close'].tail(30)

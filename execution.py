@@ -129,6 +129,42 @@ def locked_sessions(df):
     return single_price & (move >= LOCK_MIN_MOVE), single_price & (move <= -LOCK_MIN_MOVE)
 
 
+NSE_BANDS = (0.02, 0.05, 0.10, 0.20)
+TIGHT_BAND = 0.05            # 2% / 5% bands: typical of surveillance (ASM/GSM),
+                             # trade-to-trade and illiquid scrips
+MAX_PARTICIPATION = 0.02     # never be more than 2% of a day's traded value
+
+
+def traded_value(df, window=LIQUIDITY_WINDOW):
+    """Latest median daily traded value (Close × Volume) over `window`
+    sessions, in the price's currency. NaN when volume is unavailable."""
+    if df is None or df.empty or "Volume" not in df.columns:
+        return float("nan")
+    tv = (df["Close"].astype(float) * df["Volume"].astype(float)).tail(window)
+    tv = tv[tv > 0]
+    return float(tv.median()) if len(tv) else float("nan")
+
+
+def price_band_hint(df, lookback=250):
+    """Infer the stock's NSE price band from its most recent circuit lock.
+
+    Locked sessions close almost exactly at the band (±2/5/10/20%). Returns
+    that band as a fraction, or None if the stock hasn't locked in
+    `lookback` sessions (most liquid names never do). A 2% or 5% band is a
+    strong hint the scrip is under surveillance or in trade-to-trade."""
+    if df is None or len(df) < 2:
+        return None
+    sub = df.tail(lookback + 1)
+    up, down = locked_sessions(sub)
+    locked = (up | down).to_numpy()
+    if not locked.any():
+        return None
+    close = sub["Close"].astype(float)
+    move = abs(float((close / close.shift(1) - 1.0).to_numpy()[locked][-1]))
+    band = min(NSE_BANDS, key=lambda b: abs(b - move))
+    return band if abs(band - move) <= 0.003 else None
+
+
 def market_frame(df, index=None, profile="NSE", notional=DEFAULT_NOTIONAL):
     """Execution facts for a signal formed at row t's close, filled at t+1's open.
 
