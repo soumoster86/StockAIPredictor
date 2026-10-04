@@ -18,6 +18,7 @@ from model import (
 from screener import (
     DEFAULT_MAX_AGE_HOURS,
     filter_rankings_to_watchlist,
+    load_portfolio_backtest,
     load_rankings,
     merge_scan_frames,
     normalize_stock_items,
@@ -125,6 +126,12 @@ def run_walk_forward(symbol, model_type, calibrate):
     data = add_features(get_data(symbol), index_close=get_index())
     return walk_forward(data, model_type, calibrate=calibrate,
                         cost_profile=cost_profile_for(symbol))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_portfolio_backtest():
+    """Precomputed screener portfolio backtest (None if not generated)."""
+    return load_portfolio_backtest()
 
 
 def cap_scan_items(stock_items, limit=SCAN_BATCH):

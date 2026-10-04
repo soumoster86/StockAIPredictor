@@ -31,6 +31,10 @@ SCAN_BATCH = 80
 RANKINGS_DIR = Path(__file__).resolve().parent / "rankings"
 RANKINGS_CSV = "rankings_latest.csv"
 RANKINGS_META = "rankings_meta.json"
+# Outputs of scripts/portfolio_backtest.py
+PORTFOLIO_JSON = "portfolio_backtest.json"
+PORTFOLIO_EQUITY = "portfolio_equity.csv"
+PORTFOLIO_TRADES = "portfolio_trades.csv"
 # App treats precomputed files older than this as stale (hours)
 DEFAULT_MAX_AGE_HOURS = 48
 
@@ -217,6 +221,22 @@ def save_rankings(df, failures, meta, directory=None):
     payload["n_failures_listed"] = min(50, len(failures or []))
     meta_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return csv_path, meta_path
+
+
+def load_portfolio_backtest(directory=None):
+    """(meta, equity DataFrame, trades DataFrame) written by
+    scripts/portfolio_backtest.py, or None when absent/unreadable."""
+    directory = Path(directory or RANKINGS_DIR)
+    try:
+        meta = json.loads((directory / PORTFOLIO_JSON).read_text(encoding="utf-8"))
+        equity = pd.read_csv(directory / PORTFOLIO_EQUITY, index_col="date", parse_dates=True)
+    except Exception:
+        return None
+    try:
+        trades = pd.read_csv(directory / PORTFOLIO_TRADES)
+    except Exception:
+        trades = pd.DataFrame()
+    return meta, equity, trades
 
 
 def load_rankings(directory=None, max_age_hours=DEFAULT_MAX_AGE_HOURS):

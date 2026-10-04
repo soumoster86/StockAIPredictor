@@ -19,7 +19,17 @@ except ImportError:
     HAS_XGB = False
 
 from data import FEATURES, HORIZONS
-from execution import DEFAULT_NOTIONAL, market_frame, valid_rows
+from execution import (
+    DEFAULT_NOTIONAL,
+    RISK_FREE_RATE,
+    daily_rate,
+    equity_stats,
+    locked_sessions,
+    market_frame,
+    side_costs,
+    simulate_bracket,
+    valid_rows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +40,7 @@ DEFAULT_THRESHOLDS = (0.55, 0.45)
 ENTRY_GRID = np.round(np.arange(0.50, 0.71, 0.05), 2)
 EXIT_GRID = np.round(np.arange(0.30, 0.51, 0.05), 2)
 SEQ_WINDOW = 20  # lookback days for LSTM/GRU
+PLAN_MAX_HOLD_DAYS = 20  # plan expiry — matches journal.MAX_HOLD_DAYS
 
 MODEL_TYPES = ["Ensemble (NN + XGBoost + RF)", "Neural Network", "LSTM", "GRU"]
 
@@ -370,7 +381,7 @@ def build_positions(probs, entry, exit_, can_buy=None, can_sell=None):
 
 
 def performance_stats(positions, returns, cost=TRANSACTION_COST, gap=None,
-                      sell_cost=None):
+                      sell_cost=None, rf=0.0):
     """Strategy statistics for a long/flat position series.
 
     Legacy mode (`gap=None`): `returns[t]` is the close-to-close return
@@ -380,7 +391,10 @@ def performance_stats(positions, returns, cost=TRANSACTION_COST, gap=None,
     t+1's open, so the overnight `gap[t]` is earned by the position held
     yesterday and the session's `returns[t]` (open → close) by the new one.
     `cost` is the buy cost and `sell_cost` the sell cost; either may be a
-    per-row array (liquidity-dependent slippage)."""
+    per-row array (liquidity-dependent slippage).
+
+    `rf` is the annual risk-free rate: days in cash earn it, and Sharpe is
+    measured on returns in excess of it."""
     positions = np.asarray(positions, dtype=float)
     returns = np.asarray(returns, dtype=float)
     buy_c = np.asarray(cost, dtype=float)
@@ -397,28 +411,18 @@ def performance_stats(positions, returns, cost=TRANSACTION_COST, gap=None,
         gross = (1.0 + prev * np.asarray(gap, dtype=float)) * (1.0 + positions * returns) - 1.0
         held = (positions == 1) | (prev == 1)
 
-    strategy_returns = gross - costs
-    equity = np.cumprod(1.0 + strategy_returns)
-
-    std = strategy_returns.std()
-    sharpe = (float(strategy_returns.mean() / std * np.sqrt(TRADING_DAYS))
-              if std > 0 else float('nan'))
-
-    running_max = np.maximum.accumulate(equity)
-    max_drawdown = float((equity / running_max - 1.0).min())
+    strategy_returns = gross - costs + daily_rate(rf) * (1.0 - positions)
+    eq = equity_stats(strategy_returns, rf)
 
     in_market = positions == 1
     win_rate = float((gross[held] > 0).mean()) if held.any() else float('nan')
 
     return {
-        'total_return': float(equity[-1] - 1.0),
-        'sharpe': sharpe,
-        'max_drawdown': max_drawdown,
+        **eq,
         'exposure': float(in_market.mean()),
         'win_rate': win_rate,
         'n_trades': int((delta > 0).sum()),
         'total_costs': float(costs.sum()),
-        'equity': equity,
     }
 
 
@@ -441,7 +445,8 @@ def market_stats(positions, market):
     return performance_stats(positions, market['intraday'].to_numpy(),
                              cost=market['buy_cost'].to_numpy(),
                              gap=market['gap'].to_numpy(),
-                             sell_cost=market['sell_cost'].to_numpy())
+                             sell_cost=market['sell_cost'].to_numpy(),
+                             rf=RISK_FREE_RATE)
 
 
 def tune_thresholds(probs, returns, cost=TRANSACTION_COST):
@@ -929,6 +934,106 @@ def position_size(capital, risk_pct, entry, stop):
         'pct_of_capital': float(position_value / capital),
         'capped_by_capital': capped,
     }
+
+
+def _trade_daily_returns(close, res):
+    """Daily returns of one filled bracket trade, from fill day to exit day.
+
+    Fill day: fill (+buy cost) → close. Middle days: close → close. Exit day:
+    prior close → exit price (−sell cost). They compound to the trade's net
+    return, so equity curves and drawdowns are marked to market daily."""
+    dates = close.loc[res["fill_date"]:res["exit_date"]].index
+    c = close.loc[dates].to_numpy(float)
+    fill_basis = res["fill_price"] * (1.0 + res["buy_cost"])
+    exit_net = res["exit_price"] * (1.0 - res["sell_cost"])
+    if len(dates) == 1:
+        return pd.Series([exit_net / fill_basis - 1.0], index=dates)
+    r = np.empty(len(dates))
+    r[0] = c[0] / fill_basis - 1.0
+    r[1:-1] = c[1:-1] / c[:-2] - 1.0
+    r[-1] = exit_net / c[-2] - 1.0
+    return pd.Series(r, index=dates)
+
+
+def plan_backtest(test_probs, data, test_index, entry_threshold,
+                  cost_profile="NSE", notional=DEFAULT_NOTIONAL,
+                  max_days=PLAN_MAX_HOLD_DAYS):
+    """Backtest the trade plan the app actually recommends.
+
+    Whenever the model's probability crosses `entry_threshold` while flat,
+    build the Plan tab's trade from data known that day (support/resistance,
+    ATR stop, target) and simulate it with execution.simulate_bracket: fill
+    at the next open, gap-aware stop/target exits, circuit locks, costs,
+    expiry after `max_days`. One trade at a time; the next signal is taken
+    from the exit day's close. Cash earns the risk-free rate between trades.
+
+    Returns (stats, trades DataFrame, daily equity Series)."""
+    probs = pd.Series(np.asarray(test_probs, dtype=float), index=test_index)
+    close = data['Close'].astype(float)
+    locks = locked_sessions(data)
+    costs = side_costs(data, cost_profile, notional)
+
+    window = close.loc[test_index[0]:].index[1:]   # first tradeable session onward
+    daily = pd.Series(daily_rate(RISK_FREE_RATE), index=window)
+    in_trade = pd.Series(False, index=window)
+
+    trades, no_fill = [], 0
+    i = 0
+    while i < len(test_index):
+        dt = test_index[i]
+        p = probs.iloc[i]
+        if not (np.isfinite(p) and p > entry_threshold):
+            i += 1
+            continue
+        hist = data.loc[:dt]
+        sr = find_support_resistance(hist)
+        plan = compute_trade_plan(hist, sr['support'], sr['resistance'])
+        res = simulate_bracket(data, dt, plan['stop'], plan['target'], max_days=max_days,
+                               profile=cost_profile, notional=notional,
+                               locks=locks, costs=costs)
+        if res["status"] == "NO FILL":
+            no_fill += 1
+            i += 1
+            continue
+        if res["fill_date"] is None:   # signal on the last bar: nothing to trade yet
+            break
+        exit_date = res["exit_date"] if res["exit_date"] is not None else close.index[-1]
+        if res["status"] == "OPEN":     # still running: mark to the last close, no sell yet
+            res = {**res, "exit_date": exit_date, "sell_cost": 0.0}
+        tr = _trade_daily_returns(close, res).reindex(window).dropna()
+        daily.loc[tr.index] = tr
+        in_trade.loc[tr.index] = True
+        trades.append({"signal_date": dt, "probability": float(p), "stop": plan['stop'],
+                       "target": plan['target'], "reward_risk": plan['reward_risk'],
+                       **{k: res[k] for k in ("fill_date", "fill_price", "exit_date",
+                                              "exit_price", "status", "days",
+                                              "gross_return", "outcome_return")}})
+        if res["status"] == "OPEN":
+            break
+        # Next signal: the exit day's close (fills the session after). The
+        # exit is always after the signal day, so this always advances.
+        i = max(int(test_index.searchsorted(exit_date)), i + 1)
+
+    trades_df = pd.DataFrame(trades)
+    eq = equity_stats(daily.to_numpy(), RISK_FREE_RATE)
+    equity = pd.Series(eq.pop("equity"), index=window, name="Trade plan")
+    closed = trades_df[trades_df["status"] != "OPEN"] if len(trades_df) else trades_df
+    rets = closed["outcome_return"] if len(closed) else pd.Series(dtype=float)
+    gains, losses = rets[rets > 0].sum(), -rets[rets < 0].sum()
+    stats = {
+        **eq,
+        "n_trades": int(len(closed)),
+        "n_open": int(len(trades_df) - len(closed)),
+        "n_no_fill": int(no_fill),
+        "win_rate": float((rets > 0).mean()) if len(rets) else float("nan"),
+        "target_rate": float((closed["status"] == "TARGET HIT").mean()) if len(closed) else float("nan"),
+        "stop_rate": float((closed["status"] == "STOP HIT").mean()) if len(closed) else float("nan"),
+        "avg_return": float(rets.mean()) if len(rets) else float("nan"),
+        "avg_days": float(closed["days"].mean()) if len(closed) else float("nan"),
+        "profit_factor": float(gains / losses) if losses > 0 else float("nan"),
+        "exposure": float(in_trade.mean()) if len(in_trade) else 0.0,
+    }
+    return stats, trades_df, equity
 
 
 # =====================================================================

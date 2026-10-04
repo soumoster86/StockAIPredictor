@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from execution import cost_profile_for, locked_sessions, side_costs
+from execution import cost_profile_for, session_opens, simulate_bracket
 
 ROOT = Path(__file__).parent
 JOURNAL_DIR = ROOT / "journals"
@@ -322,95 +322,38 @@ def append_signal(record, path=None, user=None):
         return LocalCSVBackend().append(record, user=user)
 
 
-def _open_col(future, entry):
-    """Session opens; without an Open column assume each day opens at the
-    prior close (no gap), the first at the logged entry."""
-    if "Open" in future.columns:
-        return future["Open"].astype(float)
-    return future["Close"].astype(float).shift(1).fillna(entry)
-
-
 def resolve_entry(rec, prices, max_days=MAX_HOLD_DAYS):
     """Score one journal entry against subsequent price action, the way a
     real order would have filled.
 
-    BUY:
-      - Fill at the NEXT session's open (the signal is formed at the close,
-        so that close is not available to trade). If that session is locked
-        at the upper circuit, or opens already beyond the stop or target
-        (the plan is void), the trade is NO FILL.
-      - Each later session: an open through the stop exits at the OPEN
-        (a gap down fills worse than the stop); an open through the target
-        exits at the open (better). Otherwise an intraday touch exits at the
-        level. Both touched on one day → STOP HIT (intraday order is
-        unknown, score conservatively). A session locked at the lower
-        circuit can't be exited — the position carries to the next day.
-      - After `max_days` with neither → EXPIRED at that day's close.
-        Not enough days yet → OPEN, with the unrealized return so far.
-      - `outcome_return` is net of statutory costs and slippage;
-        `gross_return` is the price move alone.
+    BUY: delegated to execution.simulate_bracket — fill at the next open,
+    gap-aware stop/target exits, circuit locks, net-of-cost returns. See its
+    docstring for the full rules.
 
     SELL / HOLD: no trade to resolve — just the forward return from the next
     open to the close after `max_days` (CLOSED) or so far (OPEN). For SELL, a
     negative forward return means exiting was the right call."""
     signal_date = pd.Timestamp(rec["signal_date"])
     entry = float(rec["entry"])
+
+    if rec["signal"] == "BUY":
+        res = simulate_bracket(prices, signal_date, float(rec["stop"]), float(rec["target"]),
+                               max_days=max_days, profile=cost_profile_for(rec.get("symbol")),
+                               entry_ref=entry)
+        res.pop("fill_date", None)
+        return res
+
     future = prices.loc[prices.index > signal_date].head(max_days)
-    empty = {"fill_price": np.nan, "exit_price": np.nan, "gross_return": np.nan}
-
     if future.empty:
-        return {"status": "OPEN", "days": 0, "outcome_return": np.nan,
-                "exit_date": None, **empty}
-
-    opens = _open_col(future, entry)
-    fill = float(opens.iloc[0])
-
-    if rec["signal"] != "BUY":
-        last_close = float(future["Close"].iloc[-1])
-        status = "CLOSED" if len(future) >= max_days else "OPEN"
-        ret = last_close / fill - 1.0
-        return {"status": status, "days": len(future), "outcome_return": ret,
-                "exit_date": future.index[-1] if status == "CLOSED" else None,
-                "fill_price": fill, "exit_price": last_close, "gross_return": ret}
-
-    stop, target = float(rec["stop"]), float(rec["target"])
-    up_locked, down_locked = locked_sessions(prices)
-    up_locked = up_locked.reindex(future.index, fill_value=False)
-    down_locked = down_locked.reindex(future.index, fill_value=False)
-
-    if bool(up_locked.iloc[0]) or not (stop < fill < target):
-        return {"status": "NO FILL", "days": 0, "outcome_return": np.nan,
-                "exit_date": None, **empty}
-
-    # Costs use liquidity known at the signal date (no lookahead).
-    buy_costs, sell_costs = side_costs(prices, cost_profile_for(rec.get("symbol")))
-    known = prices.index <= signal_date
-    buy_cost = float(buy_costs[known].iloc[-1]) if known.any() else float(buy_costs.iloc[0])
-    sell_cost = float(sell_costs[known].iloc[-1]) if known.any() else float(sell_costs.iloc[0])
-
-    def done(status, days, exit_price, exit_date):
-        net = exit_price * (1.0 - sell_cost) / (fill * (1.0 + buy_cost)) - 1.0
-        return {"status": status, "days": days, "outcome_return": net,
-                "exit_date": exit_date, "fill_price": fill,
-                "exit_price": float(exit_price), "gross_return": exit_price / fill - 1.0}
-
-    for i, (dt, row) in enumerate(future.iterrows(), start=1):
-        if bool(down_locked.loc[dt]):
-            continue  # frozen at the lower circuit: no buyers, can't exit today
-        day_open = float(opens.loc[dt])
-        if i > 1 and day_open <= stop:
-            return done("STOP HIT", i, day_open, dt)
-        if i > 1 and day_open >= target:
-            return done("TARGET HIT", i, day_open, dt)
-        if float(row["Low"]) <= stop:  # checked first: same-day double-touch → STOP
-            return done("STOP HIT", i, stop, dt)
-        if float(row["High"]) >= target:
-            return done("TARGET HIT", i, target, dt)
-
+        return {"status": "OPEN", "days": 0, "outcome_return": np.nan, "exit_date": None,
+                "fill_price": np.nan, "exit_price": np.nan, "gross_return": np.nan}
+    fill = float(session_opens(future, entry).iloc[0])
     last_close = float(future["Close"].iloc[-1])
-    if len(future) >= max_days:
-        return done("EXPIRED", max_days, last_close, future.index[-1])
-    return done("OPEN", len(future), last_close, None)  # marked to the last close
+    status = "CLOSED" if len(future) >= max_days else "OPEN"
+    ret = last_close / fill - 1.0
+    return {"status": status, "days": len(future), "outcome_return": ret,
+            "exit_date": future.index[-1] if status == "CLOSED" else None,
+            "fill_price": fill, "exit_price": last_close, "gross_return": ret}
 
 
 RESOLVED_COLUMNS = ["status", "days", "outcome_return", "fill_price",

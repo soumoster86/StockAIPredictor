@@ -39,6 +39,12 @@ GENERIC_FEE_PER_SIDE = 0.0005
 
 DEFAULT_NOTIONAL = 100_000   # ₹ per trade — sets the DP charge share and impact
 
+# Idle cash isn't idle: it can sit in a liquid fund / T-bills. Days out of
+# the market earn this, and Sharpe is measured against it. ~91-day T-bill
+# yield; update when rates move.
+RISK_FREE_RATE = 0.06
+TRADING_DAYS = 252
+
 # ---------------------------------------------------------------------------
 # Slippage model — half-spread from liquidity + square-root market impact
 # ---------------------------------------------------------------------------
@@ -171,3 +177,109 @@ def valid_rows(frame):
     """Boolean mask of rows with a usable next session."""
     return (np.isfinite(frame["gap"].to_numpy(dtype=float))
             & np.isfinite(frame["intraday"].to_numpy(dtype=float)))
+
+
+# ---------------------------------------------------------------------------
+# Bracket orders (entry + stop + target) — shared by the journal and the
+# plan backtest so both score a trade plan identically
+# ---------------------------------------------------------------------------
+
+def session_opens(future, entry_ref=None):
+    """Session opens; without an Open column assume each day opens at the
+    prior close (no gap), the first at `entry_ref`."""
+    if "Open" in future.columns:
+        return future["Open"].astype(float)
+    return future["Close"].astype(float).shift(1).fillna(entry_ref)
+
+
+def simulate_bracket(prices, signal_date, stop, target, max_days=20, profile="NSE",
+                     notional=DEFAULT_NOTIONAL, entry_ref=None, locks=None, costs=None):
+    """Simulate a long trade planned at `signal_date`'s close.
+
+      - Fill at the NEXT session's open (the signal close isn't tradeable).
+        If that session is locked at the upper circuit, or opens already
+        beyond the stop or target (the plan is void), the result is NO FILL.
+      - Each later session: an open through the stop exits at the OPEN
+        (a gap down fills worse than the stop); an open through the target
+        exits at the open (better). Otherwise an intraday touch exits at the
+        level. Both touched on one day → STOP HIT (intraday order unknown,
+        score conservatively). A session locked at the lower circuit can't
+        be exited — the position carries to the next day.
+      - After `max_days` with neither → EXPIRED at that day's close. Not
+        enough days yet → OPEN, marked to the last close.
+      - `outcome_return` is net of statutory costs and slippage (liquidity
+        as known at the signal date); `gross_return` is the price move alone.
+
+    `locks` / `costs` accept precomputed locked_sessions / side_costs output
+    so a backtest simulating many trades on one stock computes them once."""
+    signal_date = pd.Timestamp(signal_date)
+    future = prices.loc[prices.index > signal_date].head(max_days)
+    empty = {"days": 0, "outcome_return": np.nan, "exit_date": None, "fill_date": None,
+             "fill_price": np.nan, "exit_price": np.nan, "gross_return": np.nan}
+    if future.empty:
+        return {"status": "OPEN", **empty}
+
+    opens = session_opens(future, entry_ref)
+    fill = float(opens.iloc[0])
+    up_locked, down_locked = locks if locks is not None else locked_sessions(prices)
+    up_locked = up_locked.reindex(future.index, fill_value=False)
+    down_locked = down_locked.reindex(future.index, fill_value=False)
+    if bool(up_locked.iloc[0]) or not (stop < fill < target):
+        return {"status": "NO FILL", **empty}
+
+    buy_costs, sell_costs = costs if costs is not None else side_costs(prices, profile, notional)
+    known = prices.index <= signal_date
+    pick = known.nonzero()[0][-1] if known.any() else 0
+    buy_cost, sell_cost = float(buy_costs.iloc[pick]), float(sell_costs.iloc[pick])
+
+    def done(status, days, exit_price, exit_date):
+        net = exit_price * (1.0 - sell_cost) / (fill * (1.0 + buy_cost)) - 1.0
+        return {"status": status, "days": days, "outcome_return": net,
+                "exit_date": exit_date, "fill_date": future.index[0], "fill_price": fill,
+                "exit_price": float(exit_price), "gross_return": exit_price / fill - 1.0,
+                "buy_cost": buy_cost, "sell_cost": sell_cost}
+
+    lows, highs = future["Low"].to_numpy(float), future["High"].to_numpy(float)
+    for i, dt in enumerate(future.index):
+        if bool(down_locked.iloc[i]):
+            continue  # frozen at the lower circuit: no buyers, can't exit today
+        day_open = float(opens.iloc[i])
+        if i > 0 and day_open <= stop:
+            return done("STOP HIT", i + 1, day_open, dt)
+        if i > 0 and day_open >= target:
+            return done("TARGET HIT", i + 1, day_open, dt)
+        if lows[i] <= stop:  # checked first: same-day double-touch → STOP
+            return done("STOP HIT", i + 1, stop, dt)
+        if highs[i] >= target:
+            return done("TARGET HIT", i + 1, target, dt)
+
+    last_close = float(future["Close"].iloc[-1])
+    if len(future) >= max_days:
+        return done("EXPIRED", max_days, last_close, future.index[-1])
+    return done("OPEN", len(future), last_close, None)
+
+
+# ---------------------------------------------------------------------------
+# Return statistics
+# ---------------------------------------------------------------------------
+
+def daily_rate(annual):
+    """Compounded daily equivalent of an annual rate."""
+    return (1.0 + float(annual)) ** (1.0 / TRADING_DAYS) - 1.0
+
+
+def equity_stats(daily_returns, rf=0.0):
+    """Equity curve, total return, excess-return Sharpe and max drawdown
+    for a series of daily returns."""
+    r = np.asarray(daily_returns, dtype=float)
+    equity = np.cumprod(1.0 + r)
+    excess = r - daily_rate(rf)
+    std = excess.std()
+    sharpe = float(excess.mean() / std * np.sqrt(TRADING_DAYS)) if std > 0 else float("nan")
+    max_dd = float((equity / np.maximum.accumulate(equity) - 1.0).min()) if len(r) else 0.0
+    return {
+        "total_return": float(equity[-1] - 1.0) if len(r) else 0.0,
+        "sharpe": sharpe,
+        "max_drawdown": max_dd,
+        "equity": equity,
+    }

@@ -1,9 +1,9 @@
 """Plain-language tooltips for Streamlit help= kwargs."""
 
 HELP = {
-    "strategy_return": "Total profit or loss if you had followed the model's signals over the test period, after trading costs. Example: +12% means ₹100 would have become ₹112.",
+    "strategy_return": "Total profit or loss if you had followed the model's signals over the test period, after trading costs. Days in cash earn the risk-free rate (~6%/yr, like a liquid fund). Example: +12% means ₹100 would have become ₹112.",
     "buy_hold": "What you'd have made by simply buying on day one and holding — no signals, no trading. The benchmark: if the strategy can't beat this, the model adds no value.",
-    "sharpe": "Return earned per unit of risk taken (annualized). Was the profit worth the rollercoaster? Below 0 = losing, 0–1 = weak, above 1 = good, above 2 = excellent.",
+    "sharpe": "Return earned ABOVE the risk-free rate (~6%/yr — what cash in a liquid fund earns) per unit of risk taken, annualized. Was the profit worth the rollercoaster? Below 0 = worse than cash, 0–1 = weak, above 1 = good, above 2 = excellent.",
     "max_drawdown": "The worst peak-to-bottom fall of your money. -30% means at some point you'd have been down 30% from your highest point — a gut-check for pain tolerance.",
     "win_rate": "Of all days the strategy held the stock (including the overnight gap on an exit day), the percentage that ended up. Around 50% is a coin flip.",
     "exposure": "Share of days invested in the stock rather than sitting in cash. 60% = in the market 6 days out of 10.",
@@ -44,5 +44,8 @@ HELP = {
     "benchmark": "Generates hundreds of random strategies that hold for the same number of days as the model, then shows where the model ranks. Above the 90th percentile = a real edge; near the 50th = no better than luck; the bell curve shows the random crowd.",
     "global_model": "When trained, the global model is one model fitted on the pooled history of many stocks (time-ordered offline train) instead of ~1,200 rows for one name — usually steadier on short histories. Weights may include this stock; thresholds stay stock-specific. Prefer Walk-Forward for a stricter edge check.",
     "execution": "How the backtest trades: each signal is formed at the close and filled at the NEXT session's open, so overnight gaps belong to the position you already held. Costs and slippage are charged on every buy and sell, and orders are blocked on days the stock is locked at its upper (can't buy) or lower (can't sell) circuit.",
+    "plan_backtest": "Simulates exactly what the Plan tab tells you to do: on each BUY signal, that day's stop and target, filled at the next open and exited at the stop, the target, or after 20 trading days — whichever comes first. One trade at a time.",
+    "profit_factor": "Total gains from winning trades ÷ total losses from losing trades. Above 1 = the winners paid for the losers; 1.5+ is solid.",
+    "portfolio_backtest": "Runs the screener as a real portfolio on years the model never saw: every week, buy the top names by Buy Score, sell names that drop out, pay real costs — and compare with simply owning the index.",
     "use_global": "A global model is available. Keep it on for pooled-data predictions, or untick to train a per-stock model on the fly and compare the two in the Walk-Forward tab. Global accuracy on this page is indicative, not fully out-of-sample.",
 }

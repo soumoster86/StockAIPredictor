@@ -18,6 +18,7 @@ from model import (
     backtest,
     explain_prediction,
     global_model_available,
+    plan_backtest,
     position_size,
     random_signal_benchmark,
     rank_buy_candidates,
@@ -31,6 +32,7 @@ from ui.services import (
     get_data,
     get_horizons,
     get_index,
+    get_portfolio_backtest,
     get_scan_results,
     maybe_autoseed_precomputed,
     precomputed_status,
@@ -409,6 +411,8 @@ def render_scanner_tab(ctx):
             can require edge and cap risk.
             """
         )
+
+    _render_portfolio_backtest()
 
     # ---- Live batch controls ----
     section_header("Live batch scan")
@@ -822,6 +826,104 @@ def render_plan_tab(ctx):
         )
 
 
+def _render_portfolio_backtest():
+    res = get_portfolio_backtest()
+    with st.expander("📈 Has this screener worked? — portfolio backtest", expanded=False):
+        if res is None:
+            st.caption(
+                "No portfolio backtest yet. Run offline: "
+                "`python scripts/portfolio_backtest.py`, then commit the "
+                "`rankings/` folder. " + HELP["portfolio_backtest"]
+            )
+            return
+        meta, equity, trades = res
+        s, p = meta["stats"], meta["params"]
+        benches = meta.get("benchmarks", {})
+        st.caption(
+            f"{HELP['portfolio_backtest']} Model fitted on data up to "
+            f"**{p['cut_date']}** only; tested **{s['start']} → {s['end']}**. "
+            f"Every {p['rebalance_days']} trading days: top {p['top_n']} by Buy Score "
+            f"(screener filters), equal weight, next-open fills, NSE costs, "
+            f"traded value ≥ ₹{p['min_turnover_cr']:g} Cr/day, cash at "
+            f"{p['risk_free_rate']:.0%}/yr."
+        )
+        ref_label, ref = next(iter(benches.items()), (None, None))
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(
+            "CAGR", f"{s['cagr'] * 100:+.1f}%",
+            delta=(f"{(s['cagr'] - ref['cagr']) * 100:+.1f}% vs Nifty 500"
+                   if ref else None),
+        )
+        m2.metric(
+            "Sharpe", f"{s['sharpe']:.2f}",
+            delta=f"{s['sharpe'] - ref['sharpe']:+.2f} vs Nifty 500" if ref else None,
+            help=HELP["sharpe"],
+        )
+        m3.metric("Max Drawdown", f"{s['max_drawdown'] * 100:.1f}%", help=HELP["max_drawdown"])
+        m4.metric(
+            "Costs / year", f"{s['costs_pct_per_year'] * 100:.1f}%",
+            help=f"Turnover {s['turnover_per_year']:.1f}× capital per year. " + HELP["cost"],
+        )
+        n1, n2, n3, n4 = st.columns(4)
+        n1.metric("Trades", f"{s['n_trades']}")
+        n2.metric(
+            "Hit Rate",
+            f"{s['hit_rate'] * 100:.0f}%" if pd.notna(s['hit_rate']) else "—",
+            help="Closed positions with a positive return after costs.",
+        )
+        n3.metric(
+            "Avg Trade (net)",
+            f"{s['avg_trade_return'] * 100:+.2f}%" if pd.notna(s['avg_trade_return']) else "—",
+        )
+        n4.metric(
+            "Avg Holdings", f"{s['avg_holdings']:.1f} / {p['top_n']}",
+            help="Average names held. Below the target means few stocks passed "
+                 "the screener's filters — the rest sat in cash.",
+        )
+
+        beat = [
+            lbl for lbl, b in benches.items()
+            if s['cagr'] > b['cagr'] and s['sharpe'] > b['sharpe']
+        ]
+        if benches and len(beat) == len(benches):
+            st.markdown("**✅ Beat every benchmark on both return and risk-adjusted return.**")
+        elif beat:
+            st.markdown(f"**🟡 Beat {', '.join(beat)} — but not every benchmark.**")
+        elif benches:
+            st.markdown(
+                "**❌ Did not beat simply owning the index.** Use the screener to "
+                "find names worth researching, not as a stand-alone strategy."
+            )
+
+        colors = [ACCENT, BLUE, AMBER, TEXT_MUTED]
+        fig = go.Figure()
+        for i, col in enumerate(equity.columns):
+            fig.add_trace(go.Scatter(
+                x=equity.index, y=equity[col] / equity[col].iloc[0], name=col,
+                line=dict(width=2.4 if i == 0 else 1.8, dash=None if i == 0 else "dash",
+                          color=colors[i % len(colors)]),
+            ))
+        fig.update_layout(**plotly_layout(height=360, yaxis_title="Growth of ₹1"))
+        st.plotly_chart(fig, use_container_width=True)
+
+        rows = [{"": "Screener portfolio", **s}] + [{"": k, **v} for k, v in benches.items()]
+        comp = pd.DataFrame(rows)[["", "cagr", "volatility", "sharpe", "max_drawdown"]]
+        st.dataframe(
+            comp, hide_index=True, use_container_width=True,
+            column_config={
+                "cagr": st.column_config.NumberColumn("CAGR", format="percent"),
+                "volatility": st.column_config.NumberColumn("Volatility", format="percent"),
+                "sharpe": st.column_config.NumberColumn("Sharpe", format="%.2f"),
+                "max_drawdown": st.column_config.NumberColumn("Max DD", format="percent"),
+            },
+        )
+        st.caption("Caveats: " + " ".join(meta.get("caveats", [])))
+        if len(trades) and st.toggle("Show every trade", key="pf_trades"):
+            st.dataframe(trades, hide_index=True, use_container_width=True)
+        st.caption(f"Generated {meta.get('generated_at', '?')} on "
+                   f"{meta.get('n_usable', '?')} stocks from {meta.get('watchlist', '?')}.")
+
+
 def render_backtest_tab(ctx):
     data = ctx["data"]
     test_probs = ctx["test_probs"]
@@ -965,6 +1067,9 @@ def render_backtest_tab(ctx):
                 "not how often it trades."
             )
 
+    _render_plan_backtest(data, test_probs, test_index, thresholds, cost_profile,
+                          equity, buy_hold)
+
     with st.expander("Glossary"):
         st.markdown(
             f"**Strategy Return** — {HELP['strategy_return']}\n\n"
@@ -977,6 +1082,95 @@ def render_backtest_tab(ctx):
             f"**Trading Cost** — {HELP['cost']}\n\n"
             f"**Risk Score** — {HELP['risk_score']}"
         )
+
+
+def _render_plan_backtest(data, test_probs, test_index, thresholds, cost_profile,
+                          switch_equity, buy_hold):
+    section_header("Trading the plan")
+    st.caption(
+        "The backtest above moves in and out on probability thresholds. "
+        + HELP["plan_backtest"]
+    )
+    ps, ptrades, peq = plan_backtest(
+        test_probs, data, test_index, thresholds[0], cost_profile=cost_profile,
+    )
+    if len(ptrades) == 0:
+        st.info(
+            "The model never crossed its entry threshold in the test period, so "
+            "no plan was ever traded (cash earned the risk-free rate)."
+        )
+        return
+
+    bh_ret = float(buy_hold.iloc[-1] - 1.0)
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric(
+        "Plan Return", f"{ps['total_return'] * 100:.2f}%",
+        delta=f"{(ps['total_return'] - bh_ret) * 100:+.2f}% vs Buy & Hold",
+        help=HELP["plan_backtest"],
+    )
+    p2.metric(
+        "Sharpe Ratio", f"{ps['sharpe']:.2f}" if pd.notna(ps['sharpe']) else "N/A",
+        help=HELP["sharpe"],
+    )
+    p3.metric("Max Drawdown", f"{ps['max_drawdown'] * 100:.2f}%", help=HELP["max_drawdown"])
+    extra = []
+    if ps['n_open']:
+        extra.append(f"{ps['n_open']} open")
+    if ps['n_no_fill']:
+        extra.append(f"{ps['n_no_fill']} no fill")
+    p4.metric(
+        "Trades", f"{ps['n_trades']}" + (f" ({', '.join(extra)})" if extra else ""),
+        help="Closed plans. NO FILL: the next session was circuit-locked or "
+             "opened past the stop/target, so the plan was skipped.",
+    )
+    q1, q2, q3, q4 = st.columns(4)
+    q1.metric("Win Rate", f"{ps['win_rate'] * 100:.0f}%" if pd.notna(ps['win_rate']) else "—")
+    q2.metric(
+        "Target-Hit Rate",
+        f"{ps['target_rate'] * 100:.0f}%" if pd.notna(ps['target_rate']) else "—",
+        help=HELP["target_rate"],
+    )
+    q3.metric(
+        "Avg Net / Trade",
+        f"{ps['avg_return'] * 100:+.2f}%" if pd.notna(ps['avg_return']) else "—",
+    )
+    q4.metric(
+        "Profit Factor",
+        f"{ps['profit_factor']:.2f}" if pd.notna(ps['profit_factor']) else "—",
+        help=HELP["profit_factor"],
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=peq.index, y=peq, name="Trade plan",
+                             line=dict(width=2.4, color=AMBER)))
+    fig.add_trace(go.Scatter(x=switch_equity.index, y=switch_equity, name="Threshold strategy",
+                             line=dict(width=1.8, color=ACCENT)))
+    fig.add_trace(go.Scatter(x=buy_hold.index, y=buy_hold, name="Buy & Hold",
+                             line=dict(width=1.8, dash="dash", color=BLUE)))
+    fig.update_layout(**plotly_layout(height=360, yaxis_title="Growth of ₹1"))
+    st.plotly_chart(fig, use_container_width=True)
+
+    show = ptrades[[
+        "signal_date", "fill_date", "fill_price", "stop", "target", "exit_date",
+        "exit_price", "status", "days", "outcome_return",
+    ]].copy()
+    show["signal_date"] = pd.to_datetime(show["signal_date"]).dt.date
+    show["fill_date"] = pd.to_datetime(show["fill_date"]).dt.date
+    show["exit_date"] = pd.to_datetime(show["exit_date"]).dt.date
+    styled = style_map(show.style, color_status, ["status"])
+    styled = style_map(styled, color_pos_neg, ["outcome_return"])
+    st.dataframe(
+        styled, hide_index=True, use_container_width=True,
+        column_config={
+            "signal_date": "Signal", "fill_date": "Filled", "exit_date": "Exited",
+            "fill_price": st.column_config.NumberColumn("Fill", format="%.2f"),
+            "stop": st.column_config.NumberColumn("Stop", format="%.2f"),
+            "target": st.column_config.NumberColumn("Target", format="%.2f"),
+            "exit_price": st.column_config.NumberColumn("Exit", format="%.2f"),
+            "status": "Status", "days": st.column_config.NumberColumn("Days", format="%d"),
+            "outcome_return": st.column_config.NumberColumn("Net Return", format="percent"),
+        },
+    )
 
 
 def render_walkforward_tab(ctx):

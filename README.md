@@ -96,6 +96,15 @@ signal. Open the stock for the full model signal before making any decision.
 
 - Out-of-sample accuracy compared with a baseline.
 - Backtest vs buy-and-hold, with realistic execution (see below).
+- **Plan backtest**: trades exactly what the Plan tab recommends — on each
+  BUY signal, that day's ATR/structure stop and target, filled at the next
+  open, exited at stop, target, or after 20 trading days.
+- **Screener portfolio backtest** (offline, `scripts/portfolio_backtest.py`):
+  runs the screener as a weekly top-N portfolio on years the model never saw,
+  against the Nifty 500 and a Nifty 50 total-return ETF. Shown in the
+  Scanner tab.
+- Cash earns a risk-free rate (6%/yr, `execution.RISK_FREE_RATE`) and Sharpe
+  is measured on returns in excess of it.
 - Sharpe ratio, max drawdown, exposure, win rate, and trade count.
 - Walk-forward validation across multiple market periods.
 - Probability calibration metrics: Brier score and expected calibration error.
@@ -363,6 +372,8 @@ the model's own predictions.
 ├── train_global.py     # Offline trainer for the pooled global model
 ├── scripts/check_models.py  # Validate global_models/ (or GLOBAL_MODEL_DIR)
 ├── scripts/precompute_rankings.py  # Offline full-universe screener job
+├── scripts/portfolio_backtest.py   # Offline out-of-sample portfolio test of the screener
+├── portfolio.py        # Screener-as-portfolio simulation (time-split fit, top-N, costs)
 ├── screener.py         # Pure batch-scan + rankings I/O (no Streamlit)
 ├── rankings/           # rankings_latest.csv from precompute (optional commit)
 ├── stocks.csv          # Optional liquid list (upload / offline convenience)
@@ -606,7 +617,9 @@ the default list for that session (scanner still respects the 80-name cap).
   traded value, not observed order books, and circuit locks are inferred from
   single-price sessions. Costs assume a ₹1 lakh trade at a zero-brokerage
   delivery broker.
-- Backtests ignore taxes (STCG/LTCG) and the interest idle cash could earn.
+- Backtests ignore taxes (STCG/LTCG).
+- The portfolio backtest uses today's listed universe, so it carries
+  survivorship bias (delisted names are missing) and has no sector caps.
 - Long-horizon labels overlap, so long-horizon accuracy can look optimistic.
 - yfinance data can be delayed, revised, missing, or temporarily rate-limited.
 - Streamlit Community Cloud storage is ephemeral, so journal data should be
