@@ -3,8 +3,15 @@ name: CI
 on:
   push:
     branches: [main, master]
+    # Nightly rankings commits should not re-trigger full CI
+    paths-ignore:
+      - "rankings/**"
+      - "**.md"
   pull_request:
     branches: [main, master]
+    paths-ignore:
+      - "rankings/**"
+      - "**.md"
 
 jobs:
   test:

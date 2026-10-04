@@ -4,6 +4,7 @@
 # Local / personal runtime data
 journal.csv
 journals/
+alerts/
 .venv/
 venv/
 .env

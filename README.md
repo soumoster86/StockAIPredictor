@@ -168,6 +168,15 @@ same execution rules (`execution.py`):
   all net of costs.
 - Always download CSV from the Journal tab as a backup.
 
+### Reports and alerts
+
+- **One-click report** (Prediction tab): download CSV or PDF of signal, risk,
+  trade plan, and hold-out metrics for the selected stock (`report.py`).
+- **Alerts** (Screener tab): optional Telegram and/or email when top BUY screens
+  clear your filters. Configure `[alerts]` in Streamlit secrets (see
+  DEPLOYMENT.md). De-dupes per rankings snapshot so the same names are not
+  re-alerted.
+
 ---
 
 ## What the App Predicts
@@ -397,6 +406,8 @@ the model's own predictions.
 ├── model.py            # Models, training, signals, backtests, trade planning
 ├── execution.py        # Next-open fills, NSE costs, slippage, circuit locks
 ├── journal.py          # Journal API + local/Supabase backends
+├── report.py           # One-click CSV / PDF analysis packs
+├── alerts.py           # Telegram / email alerts for top BUY screens
 ├── train_global.py     # Offline trainer for the pooled global model
 ├── scripts/check_models.py  # Validate global_models/ (or GLOBAL_MODEL_DIR)
 ├── scripts/precompute_rankings.py  # Offline full-universe screener job
@@ -410,12 +421,13 @@ the model's own predictions.
 ├── requirements-dev.txt# Dev extras (pytest)
 ├── DEPLOYMENT.md       # Streamlit Community Cloud deployment guide
 ├── LICENSE             # Unlicense / public domain dedication
-├── .gitignore          # Secrets, journals/, caches, venv
+├── .gitignore          # Secrets, journals/, alerts/, caches, venv
 ├── .gitattributes      # Git LFS pointers for *.joblib (optional)
 ├── .streamlit/config.toml      # Theme (safe to commit; no secrets)
 ├── .github/workflows/ci.yml    # pytest on Python 3.11 and 3.12
 ├── tests/              # Unit + static integrity tests
 ├── journals/           # Per-user CSVs at runtime (gitignored)
+├── alerts/             # Alert de-dupe state at runtime (gitignored)
 └── global_models/      # Created by train_global.py, then committed / LFS
                         #   global_h1..h20.joblib + global_meta.json
                         #   override path with env GLOBAL_MODEL_DIR
@@ -434,6 +446,7 @@ the model's own predictions.
 - PyTorch
 - scikit-learn
 - XGBoost
+- reportlab (PDF reports)
 
 ---
 
@@ -632,12 +645,14 @@ stocks.csv
 
 The stock picker loads the **full** universe. The Screener supports:
 
-1. **Precomputed rankings** — run offline, load instantly in the app:
-   ```bash
-   python scripts/precompute_rankings.py
-   ```
-   Writes `rankings/rankings_latest.csv` (+ meta). Commit or sync that folder
-   for Streamlit Cloud.
+1. **Precomputed rankings** — load instantly in the app:
+   - **Autopilot (recommended):** GitHub Action `Nightly rankings` runs
+     Mon–Fri 18:00 UTC and commits `rankings/` to `main`.
+   - **Manual:** Actions tab → *Nightly rankings* → *Run workflow*, or locally:
+     ```bash
+     python scripts/precompute_rankings.py
+     ```
+   Writes `rankings/rankings_latest.csv` (+ meta) for Streamlit Cloud.
 2. **Live batches** — walk the list in chunks of **80** (Scan next batch).
 
 Upload a CSV to replace the watchlist for a session.

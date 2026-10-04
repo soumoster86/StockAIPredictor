@@ -4,16 +4,17 @@
 
 Files to commit:
 ```
-app.py  ui/  model.py  data.py  journal.py  auth.py  train_global.py
-stocks.csv  stocks_universe.csv  requirements.txt  requirements-dev.txt
-.gitignore  .gitattributes  DEPLOYMENT.md  .github/workflows/ci.yml
-scripts/check_models.py
+app.py  ui/  model.py  data.py  journal.py  report.py  alerts.py  auth.py
+train_global.py  stocks.csv  stocks_universe.csv  requirements.txt
+requirements-dev.txt  .gitignore  .gitattributes  DEPLOYMENT.md
+.github/workflows/ci.yml  scripts/check_models.py
 global_models/   (optional pre-trained artifacts; prefer Git LFS)
 ```
 
 Files that must NEVER be committed (already in `.gitignore`):
 - `.streamlit/secrets.toml` — your passwords live here
 - `journal.csv`, `journals/` — personal per-user forward-test data
+- `alerts/` — alert de-dupe state
 - `__pycache__/`, `.venv/`
 
 ```bash
@@ -62,6 +63,55 @@ Click Deploy. The first build takes several minutes (torch). Then check:
   - For permanence, enable **Supabase** (see below). Download CSV from the
     Journal tab as a backup either way.
 
+### Nightly rankings (autopilot)
+
+Workflow: `.github/workflows/nightly-rankings.yml`
+
+- **Schedule:** weekdays 18:00 UTC (after NSE close)
+- **Manual:** GitHub → Actions → *Nightly rankings* → *Run workflow*
+- Writes/commits `rankings/rankings_latest.csv` + `rankings_meta.json`
+- Uses `requirements-rankings.txt` (lighter than full UI deps)
+- Commit message includes `[skip ci]`; CI also ignores `rankings/**` paths
+- **Push safety:** after a long precompute, the job re-fetches `origin/main`
+  and retries the rankings commit (avoids non-fast-forward when someone else
+  pushed during the run)
+
+Streamlit Cloud redeploys when `main` updates, so the Screener picks up fresh
+precomputed results after each successful nightly run.
+
+If the job fails often (Yahoo rate limits), increase `pause` in the workflow
+dispatch inputs (e.g. `0.8`) or lower batch size.
+
+### Optional: Supabase log for nightly rankings
+
+Each precompute run can insert one row into Supabase (`rankings_run_log`):
+status, scores, runner, GitHub run URL, top symbols, timing.
+
+1. Supabase SQL Editor → run `scripts/supabase_rankings_log.sql`
+2. GitHub → repo → **Settings → Secrets and variables → Actions**:
+   - `SUPABASE_URL` = `https://YOUR_PROJECT.supabase.co`
+   - `SUPABASE_SERVICE_KEY` = **service_role** key (Settings → API)
+3. Re-run **Nightly rankings** (or wait for schedule). In the job log look for:
+   - `supabase log: inserted` — success
+   - `supabase log: skipped (...)` — secrets not set
+   - `supabase log: FAILED — ...` — table/RLS/key issue
+4. Supabase → **Table Editor → rankings_run_log** to browse history
+
+Optional Streamlit secrets (same project) to view history in the app section
+**Rankings log**:
+
+```toml
+[rankings_log]
+enabled = true
+supabase_url = "https://YOUR_PROJECT.supabase.co"
+supabase_key = "YOUR_SERVICE_ROLE_KEY"
+table = "rankings_run_log"
+```
+
+If `[rankings_log]` is omitted, the app may fall back to `[journal]` URL/key
+for the same Supabase project. Open **Rankings log** in the main section nav
+for the full table, filters, and CSV export.
+
 ### Optional: Supabase journal (survives redeploys)
 
 1. Create a free project at https://supabase.com
@@ -78,6 +128,46 @@ table = "signal_journal"
 ```
 
 5. Redeploy. The Journal tab should show **Supabase (cloud-persistent)**.
+
+### Optional: Alerts (Telegram / email)
+
+When the Screener has scored results, the app can notify you of new top BUY
+screens. De-dupes per rankings snapshot under `alerts/state.json` (local only;
+not committed).
+
+1. Create a Telegram bot via [@BotFather](https://t.me/BotFather), get the token,
+   then message your bot and fetch `chat_id` from
+   `https://api.telegram.org/bot<token>/getUpdates`
+2. Streamlit Cloud → App settings → Secrets:
+
+```toml
+[alerts]
+enabled = true
+min_buy_score = 60
+min_probability = 0.55
+top_n = 10
+require_edge = true
+max_risk = 8.0
+telegram_bot_token = "123456:ABC..."
+telegram_chat_id = "987654321"
+# optional email
+# smtp_host = "smtp.gmail.com"
+# smtp_port = 587
+# smtp_user = "you@gmail.com"
+# smtp_password = "app-password"
+# email_to = "you@gmail.com"
+# email_from = "you@gmail.com"
+```
+
+3. In the app → **Screener** → **Alerts** → use **Dry run** first, then send.
+   Set `enabled = true` for production; the UI can still force a send when
+   channels are configured.
+
+### One-click PDF / CSV report
+
+On **Prediction**, download a CSV or PDF pack (signal, risk, plan, metrics) for
+the selected stock. PDF needs `reportlab` (already in `requirements.txt`).
+
 - **Resource limits (~1 GB)**: avoid opening many stocks × model types in
   one session; the app caps its model cache, but heavy use can still hit
   "over its resource limits" → reboot the app from the cloud dashboard.

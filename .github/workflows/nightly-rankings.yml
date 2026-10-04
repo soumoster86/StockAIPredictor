@@ -1,0 +1,159 @@
+# Nightly (weekday) full-universe screener rankings → rankings/
+# Also runnable manually from the Actions tab (workflow_dispatch).
+#
+# After each successful run the rankings CSV + meta are committed to main
+# so Streamlit Cloud can load instant "Best to buy" results.
+
+name: Nightly rankings
+
+on:
+  schedule:
+    # 18:00 UTC Mon–Fri ≈ after NSE close + data settle
+    - cron: "0 18 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      max_symbols:
+        description: "Cap symbols (leave empty for full universe)"
+        required: false
+        default: ""
+      batch_size:
+        description: "Batch size for Yahoo downloads"
+        required: false
+        default: "80"
+      pause:
+        description: "Seconds to pause between batches"
+        required: false
+        default: "0.5"
+
+concurrency:
+  group: nightly-rankings
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  precompute:
+    name: Precompute rankings
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # Need enough history for a clean rebase onto latest main
+          fetch-depth: 0
+          # Always tip of default branch so long jobs can still re-sync
+          ref: main
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-rankings.txt
+
+      - name: Install ranking dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-rankings.txt
+
+      - name: Verify global models present
+        run: |
+          python scripts/check_models.py
+
+      - name: Precompute rankings
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+          GITHUB_ACTIONS: "true"
+          MAX_SYMBOLS: ${{ github.event.inputs.max_symbols }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || '80' }}
+          PAUSE: ${{ github.event.inputs.pause || '0.5' }}
+          # Optional Supabase run log (set repo secrets; no-op if missing)
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # Optional override; default table name is rankings_run_log
+          SUPABASE_RANKINGS_LOG_TABLE: ${{ vars.SUPABASE_RANKINGS_LOG_TABLE }}
+        run: |
+          set -euo pipefail
+          ARGS=(--stocks stocks_universe.csv --batch-size "${BATCH_SIZE}" --pause "${PAUSE}")
+          if [ -n "${MAX_SYMBOLS:-}" ]; then
+            ARGS+=(--max "${MAX_SYMBOLS}")
+            echo "Capped run: max=${MAX_SYMBOLS}"
+          else
+            echo "Full-universe run"
+          fi
+          python scripts/precompute_rankings.py "${ARGS[@]}"
+
+      - name: Show rankings summary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          meta = Path("rankings/rankings_meta.json")
+          csv = Path("rankings/rankings_latest.csv")
+          if meta.exists():
+              print(json.dumps(json.loads(meta.read_text()), indent=2)[:2000])
+          if csv.exists():
+              lines = sum(1 for _ in csv.open(encoding="utf-8")) - 1
+              print(f"rankings_latest.csv rows: {lines}")
+          PY
+
+      # Custom push instead of git-auto-commit-action@v5:
+      # 1) avoids Node 20 deprecation on that action
+      # 2) rebases onto latest main (long precompute often races other pushes)
+      - name: Commit and push rankings
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [ ! -f rankings/rankings_latest.csv ] || [ ! -f rankings/rankings_meta.json ]; then
+            echo "Rankings outputs missing — nothing to commit"
+            exit 1
+          fi
+
+          # Stage-only probe against the workspace we just produced
+          git add rankings/rankings_latest.csv rankings/rankings_meta.json
+          if git diff --cached --quiet; then
+            echo "Rankings unchanged vs current HEAD — skip commit"
+            exit 0
+          fi
+
+          # Keep generated files outside git while we re-sync to origin/main
+          STAGE_DIR="$(mktemp -d)"
+          cp rankings/rankings_latest.csv rankings/rankings_meta.json "$STAGE_DIR/"
+
+          for attempt in 1 2 3 4 5; do
+            echo "Push attempt ${attempt}/5"
+            git fetch origin main
+            git checkout -B main origin/main
+
+            mkdir -p rankings
+            cp "$STAGE_DIR/rankings_latest.csv" rankings/rankings_latest.csv
+            cp "$STAGE_DIR/rankings_meta.json" rankings/rankings_meta.json
+
+            git add rankings/rankings_latest.csv rankings/rankings_meta.json
+            if git diff --cached --quiet; then
+              echo "Rankings identical to origin/main — nothing to push"
+              exit 0
+            fi
+
+            git commit -m "chore: nightly screener rankings [skip ci]"
+
+            if git push origin HEAD:main; then
+              echo "Pushed rankings to main"
+              exit 0
+            fi
+
+            echo "Push rejected (non-fast-forward). Retrying…"
+            # Drop the local commit; next loop re-checkouts origin/main
+            git reset --hard origin/main
+            sleep $((attempt * 3))
+          done
+
+          echo "Failed to push rankings after 5 attempts"
+          exit 1

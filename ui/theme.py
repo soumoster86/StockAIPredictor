@@ -222,6 +222,62 @@ def inject_global_css():
   div[data-testid="stAlert"] {{ border-radius: 12px !important; }}
   hr {{ border-color: rgba(255,255,255,0.08) !important; }}
 
+  /* ---- Sticky screener filter bar (stays under the Streamlit toolbar) ---- */
+  .scr-sticky-filters {{
+    position: sticky;
+    top: 3.1rem;
+    z-index: 40;
+    margin: 0 0 0.75rem 0;
+    padding: 0.75rem 0.9rem 0.65rem 0.9rem;
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(22,29,39,0.97) 0%, rgba(28,36,48,0.94) 100%);
+    border: 1px solid {BORDER};
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    backdrop-filter: blur(8px);
+  }}
+  .scr-sticky-filters .scr-sticky-title {{
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: {TEXT_DIM};
+    margin: 0 0 0.35rem 0;
+  }}
+
+  /* ---- Mobile: stock picker primary, denser section pills ---- */
+  @media (max-width: 768px) {{
+    .block-container {{
+      padding-left: 0.85rem !important;
+      padding-right: 0.85rem !important;
+      padding-top: 2.75rem !important;
+    }}
+    /* Emphasize main stock picker */
+    .sp-stock-primary {{
+      margin: 0 0 0.85rem 0 !important;
+      padding: 0.85rem 0.95rem !important;
+      border-radius: 16px !important;
+      border: 1px solid rgba(54,179,126,0.35) !important;
+      background: linear-gradient(160deg, rgba(54,179,126,0.12) 0%, {BG_CARD} 55%) !important;
+      box-shadow: 0 8px 22px rgba(0,0,0,0.28) !important;
+    }}
+    .sp-stock-primary [data-baseweb="select"] > div {{
+      min-height: 3rem !important;
+      font-size: 1.05rem !important;
+    }}
+    div[role="radiogroup"] label {{
+      padding: 0.4rem 0.75rem !important;
+      font-size: 0.8rem !important;
+      min-height: 2.15rem !important;
+    }}
+    [data-testid="stMetricValue"] {{
+      font-size: 1.1rem !important;
+    }}
+    .scr-sticky-filters {{
+      top: 2.6rem;
+      padding: 0.65rem 0.7rem;
+    }}
+  }}
+
   /* ---- Custom HTML card hover (progressive enhancement on inline styles) */
   .sp-pick, .sp-card {{
     transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
@@ -447,10 +503,12 @@ def pick_card_html(
     day_s: str,
     risk_s: str,
     rr_s: str,
+    sector: str | None = None,
 ) -> str:
     """Rich top-pick card for the screener shortlist (inline styles only)."""
     sym = html_lib.escape(str(symbol))
     nm = html_lib.escape(str(name))
+    sec = html_lib.escape(str(sector)) if sector else ""
     # Soft score color ramp
     if score >= 70:
         score_bg, score_fg = "rgba(54,179,126,0.22)", ACCENT
@@ -470,13 +528,34 @@ def pick_card_html(
             f"</div>"
         )
 
+    sector_chip = ""
+    if sec:
+        sector_chip = (
+            f'<span style="display:inline-flex;align-items:center;padding:0.2rem 0.55rem;'
+            f'border-radius:999px;font-size:0.7rem;font-weight:650;color:{TEXT_MUTED};'
+            f'background:rgba(255,255,255,0.04);border:1px solid {BORDER};">{sec}</span>'
+        )
+
+    # Always-visible disclaimer: screen shortlist ≠ full analysis Signal
+    screen_chip = (
+        f'<div style="margin-top:0.7rem;display:flex;flex-wrap:wrap;gap:0.35rem;'
+        f'align-items:center;">'
+        f'<span style="display:inline-flex;align-items:center;gap:0.3rem;'
+        f'padding:0.28rem 0.65rem;border-radius:999px;font-size:0.7rem;font-weight:750;'
+        f'letter-spacing:0.02em;background:rgba(230,180,80,0.16);color:{AMBER};'
+        f'border:1px solid rgba(230,180,80,0.45);">Screen ≠ full Signal</span>'
+        f'<span style="font-size:0.7rem;color:{TEXT_DIM};">Open analysis for the real call</span>'
+        f'{sector_chip}'
+        f"</div>"
+    )
+
     return f"""
 <div class="sp-pick" style="border-radius:16px;padding:1rem 1.05rem 0.95rem 1.05rem;margin-bottom:0.65rem;
             background:linear-gradient(160deg,{BG_CARD} 0%,{BG_SOFT} 100%);
             border:1px solid {BORDER};
             box-shadow:0 6px 18px rgba(0,0,0,0.22);">
   <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;
-              margin-bottom:0.55rem;">
+              margin-bottom:0.55rem;flex-wrap:wrap;">
     <span style="display:inline-flex;align-items:center;justify-content:center;
                  min-width:2rem;height:2rem;border-radius:999px;font-weight:800;
                  font-size:0.85rem;background:{ACCENT_SOFT};color:{ACCENT};
@@ -484,7 +563,7 @@ def pick_card_html(
     <span style="display:inline-flex;align-items:center;gap:0.35rem;
                  padding:0.28rem 0.7rem;border-radius:999px;font-size:0.78rem;
                  font-weight:700;background:rgba(54,179,126,0.16);color:{ACCENT};
-                 border:1px solid rgba(54,179,126,0.35);">BUY · {prob_pct:.0f}%</span>
+                 border:1px solid rgba(54,179,126,0.35);">Screen BUY · {prob_pct:.0f}%</span>
     <span style="display:inline-flex;align-items:center;padding:0.28rem 0.65rem;
                  border-radius:999px;font-size:0.78rem;font-weight:800;
                  background:{score_bg};color:{score_fg};
@@ -501,5 +580,6 @@ def pick_card_html(
     {cell("Risk", f"{risk_s}/10")}
     {cell("R:R", rr_s)}
   </div>
+  {screen_chip}
 </div>
 """

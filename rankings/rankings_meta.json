@@ -1,13 +1,18 @@
 {
-  "generated_at": "2026-07-23T09:50:45Z",
-  "n_requested": 2367,
-  "n_scored": 2050,
-  "n_failed": 317,
-  "batch_size": 80,
-  "engine": "global",
-  "elapsed_s": 756.5,
-  "source": "precomputed",
   "watchlist": "stocks_universe.csv",
+  "batch_size": 80,
+  "max_symbols": null,
+  "n_requested": 2367,
+  "runner": "github-actions",
+  "run_id": "37070402836",
+  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/37070402836",
+  "workflow": "Nightly rankings",
+  "generated_at": "2026-10-02T22:14:25Z",
+  "n_scored": 2084,
+  "n_failed": 283,
+  "engine": "global",
+  "elapsed_s": 573.1,
+  "source": "precomputed",
   "failures_sample": [
     {
       "symbol": "3BBLACKBIO.NS",
@@ -58,15 +63,7 @@
       "reason": "no/short data"
     },
     {
-      "symbol": "AGARWALEYE.NS",
-      "reason": "no/short data"
-    },
-    {
       "symbol": "AHCL.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "AJAXENGG.NS",
       "reason": "no/short data"
     },
     {
@@ -102,10 +99,6 @@
       "reason": "no/short data"
     },
     {
-      "symbol": "ANUHPHR.NS",
-      "reason": "no/short data"
-    },
-    {
       "symbol": "ARFIN.NS",
       "reason": "no/short data"
     },
@@ -135,10 +128,6 @@
     },
     {
       "symbol": "AYE.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BAJAJINDEF.NS",
       "reason": "no/short data"
     },
     {
@@ -207,6 +196,22 @@
     },
     {
       "symbol": "BMWVENTLTD.NS",
+      "reason": "no/short data"
+    },
+    {
+      "symbol": "BNAGROCHEM.NS",
+      "reason": "no/short data"
+    },
+    {
+      "symbol": "BNALTD.NS",
+      "reason": "no/short data"
+    },
+    {
+      "symbol": "BONLON.NS",
+      "reason": "no/short data"
+    },
+    {
+      "symbol": "BORANA.NS",
       "reason": "no/short data"
     }
   ],
