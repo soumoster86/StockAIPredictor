@@ -32,7 +32,7 @@ import smtplib
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -152,7 +152,7 @@ def select_alert_candidates(
 def _format_message(picks: pd.DataFrame, asof: str | None = None) -> str:
     lines = [
         "AI Stock Predictor — BUY screen alerts",
-        f"As of: {asof or datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+        f"As of: {asof or datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
         f"Candidates: {len(picks)}",
         "",
     ]
@@ -317,7 +317,7 @@ def run_alerts(
         if len(sent_map) > 30:
             for k in list(sent_map.keys())[:-30]:
                 sent_map.pop(k, None)
-        state["last_run"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        state["last_run"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         state["sent"] = sent_map
         _save_state(state)
 

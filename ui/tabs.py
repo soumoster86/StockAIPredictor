@@ -865,7 +865,6 @@ def _render_scanner_data_source(stocks, prog, pre, scan_failures):
             _request_scanner_panel("Top picks")
             st.rerun()
     with b2:
-        next_n = min(SCAN_BATCH, prog["remaining"]) if prog["remaining"] else SCAN_BATCH
         next_disabled = (
             prog.get("source") == "precomputed"
             or prog["complete"]
@@ -1807,7 +1806,7 @@ supabase_key = "YOUR_SERVICE_ROLE_KEY"
 table = "rankings_run_log"
 ```
 
-3. GitHub Actions secrets (for **writing** logs from Nightly):  
+3. GitHub Actions secrets (for **writing** logs from Nightly):
    `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` (same project)
 4. Run **Actions → Nightly rankings** once, then **Refresh** below.
 

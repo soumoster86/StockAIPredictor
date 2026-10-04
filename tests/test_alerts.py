@@ -1,6 +1,5 @@
 """alerts.py — candidate filter, de-dupe, dry-run send path."""
 import pandas as pd
-import pytest
 
 import alerts as alerts_mod
 from alerts import (

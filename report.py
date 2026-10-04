@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
@@ -21,7 +21,12 @@ try:
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import inch
     from reportlab.platypus import (
-        Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle, HRFlowable,
+        HRFlowable,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
     )
     HAS_REPORTLAB = True
 except ImportError:
@@ -29,7 +34,7 @@ except ImportError:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _safe(v: Any, fmt: str | None = None) -> str:
@@ -164,9 +169,6 @@ def report_to_pdf_bytes(report: dict) -> bytes:
     h2 = ParagraphStyle(
         "H2", parent=styles["Heading2"], fontSize=12, spaceBefore=12, spaceAfter=6,
     )
-    body = ParagraphStyle(
-        "Body2", parent=styles["Normal"], fontSize=9, leading=12,
-    )
     small = ParagraphStyle(
         "Small", parent=styles["Normal"], fontSize=8, textColor=colors.grey, leading=10,
     )
@@ -264,5 +266,5 @@ def _table(rows: list[list[str]]) -> Table:
 
 def filename_stem(symbol: str) -> str:
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(symbol))
-    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    day = datetime.now(UTC).strftime("%Y%m%d")
     return f"stock_report_{safe}_{day}"

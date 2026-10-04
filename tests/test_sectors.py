@@ -1,6 +1,7 @@
 """Sector heuristics + enrich helper."""
-from ui.sectors import classify_sector, enrich_with_sector
 import pandas as pd
+
+from ui.sectors import classify_sector, enrich_with_sector
 
 
 def test_classify_known_sectors():

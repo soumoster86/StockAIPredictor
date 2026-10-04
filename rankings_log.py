@@ -20,9 +20,8 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-
 
 DEFAULT_TABLE = "rankings_run_log"
 
@@ -175,7 +174,7 @@ def build_log_row(
 ) -> dict:
     """Flatten precompute meta + CI env into a table row."""
     meta = dict(meta or {})
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     top = top_symbols
     if top is None and meta.get("top_symbols"):

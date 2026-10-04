@@ -1,5 +1,4 @@
 """report.py — CSV/PDF analysis packs."""
-import pandas as pd
 
 from report import (
     HAS_REPORTLAB,
@@ -79,7 +78,7 @@ def test_report_to_pdf_bytes_or_skip():
     if not HAS_REPORTLAB:
         try:
             report_to_pdf_bytes(_sample_report())
-            assert False, "expected RuntimeError without reportlab"
+            raise AssertionError("expected RuntimeError without reportlab")
         except RuntimeError as e:
             assert "reportlab" in str(e).lower()
         return
