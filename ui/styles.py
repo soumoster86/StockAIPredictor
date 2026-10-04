@@ -37,6 +37,7 @@ def color_status(v):
         "OPEN": f"color: {BLUE}; font-weight: 600",
         "CLOSED": f"color: {TEXT}",
         "NO DATA": f"color: {TEXT_MUTED}",
+        "NO FILL": f"color: {TEXT_MUTED}; font-style: italic",
     }.get(v, "")
 
 

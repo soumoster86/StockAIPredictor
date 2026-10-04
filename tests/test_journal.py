@@ -55,7 +55,9 @@ def test_safe_username_and_per_user_paths(tmp_path, monkeypatch):
 def test_target_hit():
     r = resolve_entry(REC, prices([(1020, 990, 1010), (1050, 1000, 1040), (1110, 1030, 1090)]))
     assert (r["status"], r["days"]) == ("TARGET HIT", 3)
-    assert abs(r["outcome_return"] - 0.1) < 1e-12
+    assert abs(r["gross_return"] - 0.1) < 1e-12
+    # Net of STT, stamp duty, fees, DP charge and slippage: ~0.3% round trip
+    assert 0.09 < r["outcome_return"] < r["gross_return"]
 
 
 def test_stop_hit_and_conservative_double_touch():
@@ -67,7 +69,8 @@ def test_stop_hit_and_conservative_double_touch():
 def test_expired_open_and_sell_paths():
     assert resolve_entry(REC, prices([(1010, 990, 1005)] * 25))["status"] == "EXPIRED"
     r = resolve_entry(REC, prices([(1010, 990, 1020)] * 5))
-    assert r["status"] == "OPEN" and abs(r["outcome_return"] - 0.02) < 1e-12
+    assert r["status"] == "OPEN" and abs(r["gross_return"] - 0.02) < 1e-12
+    assert r["outcome_return"] < r["gross_return"]
     sell = {**REC, "signal": "SELL"}
     r = resolve_entry(sell, prices([(1000, 960, 970)] * 20))
     assert r["status"] == "CLOSED" and r["outcome_return"] < 0

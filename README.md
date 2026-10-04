@@ -95,7 +95,7 @@ signal. Open the stock for the full model signal before making any decision.
 ### Validation and Explainability
 
 - Out-of-sample accuracy compared with a baseline.
-- Backtest vs buy-and-hold.
+- Backtest vs buy-and-hold, with realistic execution (see below).
 - Sharpe ratio, max drawdown, exposure, win rate, and trade count.
 - Walk-forward validation across multiple market periods.
 - Probability calibration metrics: Brier score and expected calibration error.
@@ -105,6 +105,26 @@ signal. Open the stock for the full model signal before making any decision.
   random strategies of the same trade frequency, to show whether the edge is
   real or just luck.
 
+### Execution Realism
+
+Every backtest, walk-forward fold, threshold search and journal entry uses the
+same execution rules (`execution.py`):
+
+- **Next-open fills.** A signal is computed from the close, so the order fills
+  at the *next session's open*. The overnight gap belongs to the position you
+  already held; a new signal never gets credit for the gap it predicted.
+- **NSE delivery costs.** STT 0.1% on buy and sell, 0.015% stamp duty on the
+  buy, exchange and SEBI fees plus 18% GST, and a ₹15.93 DP charge per sell
+  (on a ₹1 lakh trade) — about 0.24% per round trip before slippage.
+  Non-NSE tickers pay a flat 0.05% per side.
+- **Liquidity-based slippage.** Half-spread scales with the stock's 20-day
+  median traded value, plus square-root market impact
+  (`σ · sqrt(trade size / ADV)`). A large-cap pays a few basis points; a thin
+  small-cap can pay 1–3% per round trip.
+- **Circuit locks.** Sessions that trade at a single price after a ≥2% move are
+  treated as circuit-locked: no buying at the upper circuit, no selling at the
+  lower circuit. Blocked orders retry the next session.
+
 ### Journal
 
 - Log the app's signal and trade plan (**per authenticated user**).
@@ -112,8 +132,12 @@ signal. Open the stock for the full model signal before making any decision.
   - **local** (default): `journals/<user>.csv` — fine locally; ephemeral on Cloud
   - **supabase**: cloud Postgres via secrets — survives redeploys
     (`scripts/supabase_journal.sql` + `[journal]` secrets; see DEPLOYMENT.md)
-- Later resolve logged BUY plans against real price action.
-- Tracks target hit, stop hit, expired plans, win rate, and average return.
+- Later resolve logged BUY plans against real price action, filled like a real
+  order: entry at the next open, a gap through the stop or target exits at the
+  open (not the level), no exit while locked at the lower circuit, and no fill
+  if the next session is locked at the upper circuit or opens past a level.
+- Tracks target hit, stop hit, expired plans, win rate, and average return —
+  all net of costs.
 - Always download CSV from the Journal tab as a backup.
 
 ---
@@ -278,7 +302,8 @@ Instead, it tunes two thresholds on the validation slice:
 - Entry threshold: above this probability, signal `BUY`.
 - Exit threshold: below this probability, signal `SELL`.
 
-The objective is after-cost Sharpe ratio.
+The objective is after-cost Sharpe ratio, simulated with next-open fills,
+NSE costs, liquidity-based slippage and circuit locks.
 
 ### 7. Evaluate on Test Data
 
@@ -333,6 +358,7 @@ the model's own predictions.
 ├── auth.py             # Login gate and PBKDF2 password hashing
 ├── data.py             # Data download, feature engineering, targets
 ├── model.py            # Models, training, signals, backtests, trade planning
+├── execution.py        # Next-open fills, NSE costs, slippage, circuit locks
 ├── journal.py          # Journal API + local/Supabase backends
 ├── train_global.py     # Offline trainer for the pooled global model
 ├── scripts/check_models.py  # Validate global_models/ (or GLOBAL_MODEL_DIR)
@@ -576,7 +602,11 @@ the default list for that session (scanner still respects the 80-name cap).
   be normal in honest out-of-sample testing.
 - The app is a decision-support tool, not an automated trading system.
 - Scanner calls are not full signals.
-- Backtests assume simplified execution and approximate transaction costs.
+- Execution is simulated from daily bars: spreads and impact are estimated from
+  traded value, not observed order books, and circuit locks are inferred from
+  single-price sessions. Costs assume a ₹1 lakh trade at a zero-brokerage
+  delivery broker.
+- Backtests ignore taxes (STCG/LTCG) and the interest idle cash could earn.
 - Long-horizon labels overlap, so long-horizon accuracy can look optimistic.
 - yfinance data can be delayed, revised, missing, or temporarily rate-limited.
 - Streamlit Community Cloud storage is ephemeral, so journal data should be

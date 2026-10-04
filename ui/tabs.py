@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from execution import DEFAULT_NOTIONAL, cost_profile_for
 from journal import (
     MAX_HOLD_DAYS,
     append_signal,
@@ -826,10 +827,11 @@ def render_backtest_tab(ctx):
     test_probs = ctx["test_probs"]
     test_index = ctx["test_index"]
     thresholds = ctx["thresholds"]
+    cost_profile = cost_profile_for(ctx["symbol"])
 
     section_header("Out-of-sample performance")
     stats, equity, buy_hold = backtest(
-        test_probs, data['Close'], test_index, thresholds,
+        test_probs, data, test_index, thresholds, cost_profile=cost_profile,
     )
     if stats['n_trades'] == 0:
         st.info(
@@ -865,7 +867,23 @@ def render_backtest_tab(ctx):
     )
     r2c2.metric("Exposure", f"{stats['exposure'] * 100:.1f}%", help=HELP["exposure"])
     r2c3.metric("Trades (entries)", f"{stats['n_trades']}", help=HELP["trades"])
-    r2c4.metric("Cost per Change", "0.10%", help=HELP["cost"])
+    r2c4.metric(
+        "Round-trip Cost", f"{stats['round_trip_cost'] * 100:.2f}%", help=HELP["cost"],
+    )
+    cost_note = (
+        "NSE delivery charges" if cost_profile == "NSE"
+        else "a flat 0.05%/side fee (non-NSE ticker)"
+    )
+    blocked = (
+        f" Circuit locks blocked the strategy's order on {stats['blocked_days']} day(s)."
+        if stats['blocked_days'] else ""
+    )
+    st.caption(
+        f"Execution: signals at the close, fills at the next open; {cost_note} plus "
+        f"liquidity-based slippage on a ₹{DEFAULT_NOTIONAL:,.0f} trade. Total costs "
+        f"paid: {stats['total_costs'] * 100:.2f}% of capital.{blocked}",
+        help=HELP["execution"],
+    )
 
     section_header("Equity curve")
     bt_fig = go.Figure()
@@ -890,7 +908,7 @@ def render_backtest_tab(ctx):
             "sit far right of the random crowd; luck sits in the middle."
         )
         bench = random_signal_benchmark(
-            test_probs, data['Close'], test_index, thresholds,
+            test_probs, data, test_index, thresholds, cost_profile=cost_profile,
         )
         if bench is None:
             st.info(
@@ -1087,7 +1105,8 @@ def render_journal_tab(ctx):
         sc = scorecard(resolved)
         j1, j2, j3, j4, j5 = st.columns(5)
         j1.metric("Signals Logged", sc['n_signals'])
-        j2.metric("BUY Plans Resolved", f"{sc['n_resolved']} ({sc['n_open']} open)")
+        no_fill = f", {sc['n_no_fill']} no fill" if sc['n_no_fill'] else ""
+        j2.metric("BUY Plans Resolved", f"{sc['n_resolved']} ({sc['n_open']} open{no_fill})")
         j3.metric(
             "Target-Hit Rate",
             f"{sc['target_rate'] * 100:.0f}%" if pd.notna(sc['target_rate']) else "—",
@@ -1096,16 +1115,17 @@ def render_journal_tab(ctx):
         j4.metric(
             "Win Rate",
             f"{sc['win_rate'] * 100:.0f}%" if pd.notna(sc['win_rate']) else "—",
-            help="Resolved BUY plans that ended with any positive return.",
+            help="Resolved BUY plans that ended with a positive return after costs.",
         )
         j5.metric(
-            "Avg Return / Plan",
+            "Avg Net Return / Plan",
             f"{sc['avg_return'] * 100:+.1f}%" if pd.notna(sc['avg_return']) else "—",
         )
 
         show = resolved[[
             "signal_date", "symbol", "model_type", "signal", "probability",
-            "entry", "stop", "target", "status", "days", "outcome_return",
+            "entry", "fill_price", "stop", "target", "exit_price", "status", "days",
+            "outcome_return",
         ]].sort_values("signal_date", ascending=False)
         _journal_styled = style_map(show.style, color_status, ["status"])
         _journal_styled = style_map(_journal_styled, color_signal, ["signal"])
@@ -1116,12 +1136,16 @@ def render_journal_tab(ctx):
                 "signal_date": "Date", "symbol": "Symbol", "model_type": "Model",
                 "signal": "Signal",
                 "probability": st.column_config.NumberColumn("Prob", format="percent"),
-                "entry": st.column_config.NumberColumn("Entry", format="%.2f"),
+                "entry": st.column_config.NumberColumn("Signal Close", format="%.2f"),
+                "fill_price": st.column_config.NumberColumn(
+                    "Fill", format="%.2f", help="Next session's open — the realistic entry."),
+                "exit_price": st.column_config.NumberColumn("Exit", format="%.2f"),
                 "stop": st.column_config.NumberColumn("Stop", format="%.2f"),
                 "target": st.column_config.NumberColumn("Target", format="%.2f"),
                 "status": st.column_config.TextColumn("Status", help=HELP["journal_status"]),
                 "days": st.column_config.NumberColumn("Days", format="%d"),
-                "outcome_return": st.column_config.NumberColumn("Return", format="percent"),
+                "outcome_return": st.column_config.NumberColumn(
+                    "Net Return", format="percent", help="After STT, fees and slippage."),
             },
         )
         store_note = (
@@ -1130,9 +1154,10 @@ def render_journal_tab(ctx):
             else f"Local file `{jpath}` — download often on Cloud"
         )
         st.caption(
-            f"BUY plans resolve when price touches stop or target, or expire after "
+            f"BUY plans fill at the next session's open and resolve when price reaches "
+            f"stop or target (a gap through a level exits at the open), or expire after "
             f"{MAX_HOLD_DAYS} trading days. Same-day double-touches score as STOP "
-            f"(conservative). {store_note}."
+            f"(conservative). Returns are net of costs. {store_note}."
         )
         st.download_button(
             "Download journal as CSV",

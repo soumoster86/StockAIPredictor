@@ -19,6 +19,7 @@ except ImportError:
     HAS_XGB = False
 
 from data import FEATURES, HORIZONS
+from execution import DEFAULT_NOTIONAL, market_frame, valid_rows
 
 logger = logging.getLogger(__name__)
 
@@ -343,17 +344,60 @@ def make_predictor(model_type):
 # Pure strategy / analytics logic (unchanged math, no torch)
 # =====================================================================
 
-def build_positions(probs, entry, exit_):
+def build_positions(probs, entry, exit_, can_buy=None, can_sell=None):
+    """Long/flat positions with entry/exit hysteresis.
+
+    With `can_buy` / `can_sell` masks (circuit locks), the position follows
+    the signal's intent only when the order could actually fill: a blocked
+    buy keeps you flat and a blocked sell keeps you long until the next
+    session where the order goes through."""
     raw = np.where(probs > entry, 1.0, np.where(probs < exit_, 0.0, np.nan))
-    return pd.Series(raw).ffill().fillna(0.0).to_numpy()
+    intent = pd.Series(raw).ffill().fillna(0.0).to_numpy()
+    if can_buy is None and can_sell is None:
+        return intent
+
+    n = len(intent)
+    can_buy = np.ones(n, bool) if can_buy is None else np.asarray(can_buy, bool)
+    can_sell = np.ones(n, bool) if can_sell is None else np.asarray(can_sell, bool)
+    positions = np.empty(n)
+    cur = 0.0
+    for i in range(n):
+        want = intent[i]
+        if (want > cur and can_buy[i]) or (want < cur and can_sell[i]):
+            cur = want
+        positions[i] = cur
+    return positions
 
 
-def performance_stats(positions, returns, cost=TRANSACTION_COST):
+def performance_stats(positions, returns, cost=TRANSACTION_COST, gap=None,
+                      sell_cost=None):
+    """Strategy statistics for a long/flat position series.
+
+    Legacy mode (`gap=None`): `returns[t]` is the close-to-close return
+    earned by `positions[t]`, and `cost` is charged per unit of change.
+
+    Next-open mode (`gap` given): the order decided at t's close fills at
+    t+1's open, so the overnight `gap[t]` is earned by the position held
+    yesterday and the session's `returns[t]` (open → close) by the new one.
+    `cost` is the buy cost and `sell_cost` the sell cost; either may be a
+    per-row array (liquidity-dependent slippage)."""
     positions = np.asarray(positions, dtype=float)
     returns = np.asarray(returns, dtype=float)
+    buy_c = np.asarray(cost, dtype=float)
+    sell_c = buy_c if sell_cost is None else np.asarray(sell_cost, dtype=float)
 
-    changes = np.abs(np.diff(positions, prepend=0.0))
-    strategy_returns = returns * positions - cost * changes
+    delta = np.diff(positions, prepend=0.0)
+    costs = np.where(delta > 0, delta * buy_c, -delta * sell_c)
+
+    if gap is None:
+        gross = returns * positions
+        held = positions == 1
+    else:
+        prev = np.concatenate([[0.0], positions[:-1]])
+        gross = (1.0 + prev * np.asarray(gap, dtype=float)) * (1.0 + positions * returns) - 1.0
+        held = (positions == 1) | (prev == 1)
+
+    strategy_returns = gross - costs
     equity = np.cumprod(1.0 + strategy_returns)
 
     std = strategy_returns.std()
@@ -364,7 +408,7 @@ def performance_stats(positions, returns, cost=TRANSACTION_COST):
     max_drawdown = float((equity / running_max - 1.0).min())
 
     in_market = positions == 1
-    win_rate = float((returns[in_market] > 0).mean()) if in_market.any() else float('nan')
+    win_rate = float((gross[held] > 0).mean()) if held.any() else float('nan')
 
     return {
         'total_return': float(equity[-1] - 1.0),
@@ -372,19 +416,44 @@ def performance_stats(positions, returns, cost=TRANSACTION_COST):
         'max_drawdown': max_drawdown,
         'exposure': float(in_market.mean()),
         'win_rate': win_rate,
-        'n_trades': int((np.diff(positions, prepend=0.0) > 0).sum()),
+        'n_trades': int((delta > 0).sum()),
+        'total_costs': float(costs.sum()),
         'equity': equity,
     }
 
 
+def strategy_stats(probs, entry, exit_, market, cost=TRANSACTION_COST):
+    """Simulate the threshold strategy on `market`.
+
+    `market` is either a market frame from execution.market_frame (next-open
+    fills, real costs, circuit locks) or a plain array of close-to-close
+    returns (legacy, flat `cost`)."""
+    if isinstance(market, pd.DataFrame):
+        positions = build_positions(probs, entry, exit_,
+                                    market['can_buy'].to_numpy(),
+                                    market['can_sell'].to_numpy())
+        return market_stats(positions, market)
+    return performance_stats(build_positions(probs, entry, exit_), market, cost)
+
+
+def market_stats(positions, market):
+    """performance_stats for a fixed position series on a market frame."""
+    return performance_stats(positions, market['intraday'].to_numpy(),
+                             cost=market['buy_cost'].to_numpy(),
+                             gap=market['gap'].to_numpy(),
+                             sell_cost=market['sell_cost'].to_numpy())
+
+
 def tune_thresholds(probs, returns, cost=TRANSACTION_COST):
+    """Grid-search entry/exit thresholds for the best after-cost Sharpe.
+    `returns` may be a market frame or legacy close-to-close returns."""
     best = DEFAULT_THRESHOLDS
     best_score = -np.inf
     for entry in ENTRY_GRID:
         for exit_ in EXIT_GRID:
             if exit_ >= entry:
                 continue
-            stats = performance_stats(build_positions(probs, entry, exit_), returns, cost)
+            stats = strategy_stats(probs, entry, exit_, returns, cost)
             score = stats['sharpe'] if np.isfinite(stats['sharpe']) else stats['total_return']
             if score > best_score:
                 best_score = score
@@ -435,22 +504,30 @@ def _masked(data, target_col):
     return sub[FEATURES].values, sub[target_col].values.astype(float), sub.index
 
 
+def _tune_on_slice(all_probs, mkt, start, end):
+    """Tune thresholds on rows [start:end) with a usable next session."""
+    probs = all_probs[start:end]
+    sub = mkt.iloc[start:end]
+    mask = valid_rows(sub) & np.isfinite(probs)
+    return tune_thresholds(probs[mask], sub[mask])
+
+
 # =====================================================================
 # Main entry points
 # =====================================================================
 
-def train_model(data, model_type="Neural Network", calibrate=False):
+def train_model(data, model_type="Neural Network", calibrate=False, cost_profile="NSE"):
     """1-day model of the chosen type. Chronological 64/16/20 split;
-    scaler fit on train only; thresholds tuned on validation; metrics
-    from the untouched test slice. With calibrate=True, an isotonic
-    regression fitted on the validation slice remaps probabilities so
-    they match observed frequencies."""
+    scaler fit on train only; thresholds tuned on validation (next-open
+    fills, `cost_profile` costs); metrics from the untouched test slice.
+    With calibrate=True, an isotonic regression fitted on the validation
+    slice remaps probabilities so they match observed frequencies."""
     X, y, dates = _masked(data, 'Target_1')
     n = len(X)
     if n < 300:
         raise ValueError("Need at least 300 rows of feature data to train.")
 
-    next_ret = data['Close'].pct_change().shift(-1).loc[dates].values
+    mkt = market_frame(data, dates, profile=cost_profile)
 
     test_n = int(n * 0.20)
     val_n = int(n * 0.16)
@@ -472,10 +549,7 @@ def train_model(data, model_type="Neural Network", calibrate=False):
         predictor = CalibratedPredictor(predictor, iso)
         all_probs = predictor._map(all_probs)
 
-    val_probs = all_probs[train_end:val_end]
-    val_rets = next_ret[train_end:val_end]
-    mask = np.isfinite(val_rets) & np.isfinite(val_probs)
-    thresholds = tune_thresholds(val_probs[mask], val_rets[mask])
+    thresholds = _tune_on_slice(all_probs, mkt, train_end, val_end)
 
     test_probs = all_probs[val_end:]
     metrics = _classification_metrics(test_probs, y[val_end:])
@@ -578,27 +652,48 @@ def multi_horizon_forecast(data, model_type="Neural Network"):
     return pd.DataFrame(rows)
 
 
-def backtest(test_probs, prices, test_index, thresholds=DEFAULT_THRESHOLDS):
-    """Backtest pre-computed probabilities on the held-out period."""
+def _test_market(test_probs, prices, test_index, cost_profile, notional):
+    """Market frame for the test window, trimmed to rows with both a
+    probability and a usable next session."""
     probs = np.asarray(test_probs, dtype=float)
+    mkt = market_frame(prices, test_index, profile=cost_profile, notional=notional)
+    valid = valid_rows(mkt) & np.isfinite(probs)
+    return probs[valid], mkt[valid]
 
-    next_returns = prices.pct_change().shift(-1)
-    rets = next_returns.loc[test_index].to_numpy()
-    valid = np.isfinite(rets) & np.isfinite(probs)
-    probs, rets, idx = probs[valid], rets[valid], test_index[valid]
 
-    positions = build_positions(probs, *thresholds)
-    stats = performance_stats(positions, rets)
+def backtest(test_probs, prices, test_index, thresholds=DEFAULT_THRESHOLDS,
+             cost_profile="NSE", notional=DEFAULT_NOTIONAL):
+    """Backtest pre-computed probabilities on the held-out period.
+
+    `prices` is the OHLCV frame (a Close Series still works, close-to-close).
+    Orders decided at each close fill at the next open, pay the profile's
+    statutory costs plus liquidity-based slippage, and are blocked on
+    circuit-locked sessions. Buy & Hold is simulated with the same rules."""
+    probs, mkt = _test_market(test_probs, prices, test_index, cost_profile, notional)
+    idx = mkt.index
+
+    positions = build_positions(probs, *thresholds,
+                                mkt['can_buy'].to_numpy(), mkt['can_sell'].to_numpy())
+    intent = build_positions(probs, *thresholds)
+    stats = market_stats(positions, mkt)
+
+    always_in = build_positions(np.ones(len(mkt)), 0.5, 0.4,
+                                mkt['can_buy'].to_numpy(), mkt['can_sell'].to_numpy())
+    bh = market_stats(always_in, mkt)
 
     equity = pd.Series(stats.pop('equity'), index=idx, name='Strategy')
-    buy_hold = pd.Series(np.cumprod(1.0 + rets), index=idx, name='Buy & Hold')
+    buy_hold = pd.Series(bh['equity'], index=idx, name='Buy & Hold')
     stats['buy_hold_return'] = float(buy_hold.iloc[-1] - 1.0)
+    stats['round_trip_cost'] = float((mkt['buy_cost'] + mkt['sell_cost']).median())
+    stats['blocked_days'] = int((positions != intent).sum())
+    stats['cost_profile'] = cost_profile
 
     return stats, equity, buy_hold
 
 
 def random_signal_benchmark(test_probs, prices, test_index,
-                            thresholds=DEFAULT_THRESHOLDS, n_random=300, seed=SEED):
+                            thresholds=DEFAULT_THRESHOLDS, n_random=300, seed=SEED,
+                            cost_profile="NSE", notional=DEFAULT_NOTIONAL):
     """Is the strategy's performance better than luck?
 
     Generates `n_random` random long-only strategies that hold for the SAME
@@ -612,21 +707,18 @@ def random_signal_benchmark(test_probs, prices, test_index,
     thing being tested is signal quality, not activity level.
 
     Returns a dict, or None if the strategy never takes a position."""
-    probs = np.asarray(test_probs, dtype=float)
-    next_returns = prices.pct_change().shift(-1)
-    rets = next_returns.loc[test_index].to_numpy()
-    valid = np.isfinite(rets) & np.isfinite(probs)
-    probs, rets = probs[valid], rets[valid]
-    n = len(rets)
+    probs, mkt = _test_market(test_probs, prices, test_index, cost_profile, notional)
+    n = len(mkt)
     if n < 20:
         return None
 
-    real_pos = build_positions(probs, *thresholds)
+    real_pos = build_positions(probs, *thresholds,
+                               mkt['can_buy'].to_numpy(), mkt['can_sell'].to_numpy())
     n_in_market = int((real_pos == 1).sum())
     if n_in_market == 0 or n_in_market == n:
         return None  # nothing (or everything) held -> no meaningful comparison
 
-    real = performance_stats(real_pos, rets)
+    real = market_stats(real_pos, mkt)
     real_sharpe = real["sharpe"]
     real_return = real["total_return"]
 
@@ -636,7 +728,7 @@ def random_signal_benchmark(test_probs, prices, test_index,
     for i in range(n_random):
         pos = np.zeros(n)
         pos[rng.choice(n, size=n_in_market, replace=False)] = 1.0
-        s = performance_stats(pos, rets)
+        s = market_stats(pos, mkt)
         rand_sharpes[i] = s["sharpe"] if np.isfinite(s["sharpe"]) else 0.0
         rand_returns[i] = s["total_return"]
 
@@ -655,7 +747,7 @@ def random_signal_benchmark(test_probs, prices, test_index,
 
 
 def walk_forward(data, model_type="Neural Network", n_splits=4, min_train=300,
-                 calibrate=False):
+                 calibrate=False, cost_profile="NSE"):
     """Expanding-window walk-forward validation of the chosen model type."""
     X, y, dates = _masked(data, 'Target_1')
     n = len(X)
@@ -663,7 +755,7 @@ def walk_forward(data, model_type="Neural Network", n_splits=4, min_train=300,
     if fold_size < 40:
         raise ValueError("Not enough history for walk-forward validation.")
 
-    next_ret = data['Close'].pct_change().shift(-1).loc[dates].values
+    mkt = market_frame(data, dates, profile=cost_profile)
 
     rows = []
     for i in range(n_splits):
@@ -687,22 +779,18 @@ def walk_forward(data, model_type="Neural Network", n_splits=4, min_train=300,
             predictor = CalibratedPredictor(predictor, iso)
             all_probs = predictor._map(all_probs)
 
-        val_probs = all_probs[fit_end:train_total]
-        val_rets = next_ret[fit_end:train_total]
-        v_mask = np.isfinite(val_rets) & np.isfinite(val_probs)
-        entry, exit_ = tune_thresholds(val_probs[v_mask], val_rets[v_mask])
+        entry, exit_ = _tune_on_slice(all_probs, mkt, fit_end, train_total)
 
         test_probs = all_probs[train_total:test_end]
-        test_rets = next_ret[train_total:test_end]
-        t_mask = np.isfinite(test_rets) & np.isfinite(test_probs)
+        test_mkt = mkt.iloc[train_total:test_end]
+        t_mask = valid_rows(test_mkt) & np.isfinite(test_probs)
+        test_mkt = test_mkt[t_mask]
 
-        stats = performance_stats(
-            build_positions(test_probs[t_mask], entry, exit_), test_rets[t_mask]
-        )
+        stats = strategy_stats(test_probs[t_mask], entry, exit_, test_mkt)
         accuracy = float(
             ((test_probs[t_mask] > 0.5) == y[train_total:test_end][t_mask]).mean()
         )
-        buy_hold = float(np.prod(1.0 + test_rets[t_mask]) - 1.0)
+        buy_hold = strategy_stats(np.ones(len(test_mkt)), 0.5, 0.4, test_mkt)['total_return']
 
         rows.append({
             'Fold': i + 1,
@@ -1203,7 +1291,7 @@ def global_model_available(directory=GLOBAL_MODEL_DIR):
 # per-stock fit. Thresholds and evaluation stay stock-specific.
 # =====================================================================
 
-def predict_with_global(data, bundle, calibrate=False):
+def predict_with_global(data, bundle, calibrate=False, cost_profile="NSE"):
     """Drop-in replacement for train_model() that uses a loaded global
     model instead of training a per-stock one. `bundle` is the dict from
     load_global_model(1). Returns the same 6-tuple as train_model()."""
@@ -1215,7 +1303,7 @@ def predict_with_global(data, bundle, calibrate=False):
     if n < 120:
         raise ValueError("Need at least 120 rows to evaluate the global model.")
 
-    next_ret = data['Close'].pct_change().shift(-1).loc[dates].values
+    mkt = market_frame(data, dates, profile=cost_profile)
 
     # Same chronological split as train_model, for honest thresholds/metrics.
     test_n = int(n * 0.20)
@@ -1235,10 +1323,7 @@ def predict_with_global(data, bundle, calibrate=False):
             eval_predictor = CalibratedPredictor(predictor, iso)
             all_probs = eval_predictor._map(all_probs)
 
-    val_probs = all_probs[n - test_n - val_n:val_end]
-    val_rets = next_ret[n - test_n - val_n:val_end]
-    mask = np.isfinite(val_rets) & np.isfinite(val_probs)
-    thresholds = tune_thresholds(val_probs[mask], val_rets[mask])
+    thresholds = _tune_on_slice(all_probs, mkt, n - test_n - val_n, val_end)
 
     test_probs = all_probs[val_end:]
     metrics = _classification_metrics(test_probs, y[val_end:])

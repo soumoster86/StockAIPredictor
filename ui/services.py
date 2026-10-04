@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from data import add_features, fetch_data, fetch_index, fetch_many
+from execution import cost_profile_for
 from model import (
     global_model_available,
     load_global_model,
@@ -87,14 +88,15 @@ def get_data_batch(symbols):
 @st.cache_resource(ttl=3600, max_entries=4, show_spinner="Training model...")
 def get_trained(symbol, model_type, calibrate, use_global):
     data = add_features(get_data(symbol), index_close=get_index())
+    profile = cost_profile_for(symbol)
     if use_global:
         bundle = load_global_model(1)
         if bundle is not None:
             try:
-                return (data,) + predict_with_global(data, bundle, calibrate)
+                return (data,) + predict_with_global(data, bundle, calibrate, profile)
             except ValueError:
                 pass
-    return (data,) + train_model(data, model_type, calibrate)
+    return (data,) + train_model(data, model_type, calibrate, profile)
 
 
 @st.cache_data(ttl=3600, max_entries=4, show_spinner="Training one model per horizon (1/3/5/10/20 days)...")
@@ -121,7 +123,8 @@ def get_horizons(symbol, model_type, use_global):
 @st.cache_data(ttl=3600, max_entries=2, show_spinner="Running walk-forward validation (trains one model per fold)...")
 def run_walk_forward(symbol, model_type, calibrate):
     data = add_features(get_data(symbol), index_close=get_index())
-    return walk_forward(data, model_type, calibrate=calibrate)
+    return walk_forward(data, model_type, calibrate=calibrate,
+                        cost_profile=cost_profile_for(symbol))
 
 
 def cap_scan_items(stock_items, limit=SCAN_BATCH):

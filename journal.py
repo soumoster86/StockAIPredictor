@@ -28,6 +28,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from execution import cost_profile_for, locked_sessions, side_costs
+
 ROOT = Path(__file__).parent
 JOURNAL_DIR = ROOT / "journals"
 LEGACY_JOURNAL_FILE = ROOT / "journal.csv"
@@ -320,57 +322,106 @@ def append_signal(record, path=None, user=None):
         return LocalCSVBackend().append(record, user=user)
 
 
+def _open_col(future, entry):
+    """Session opens; without an Open column assume each day opens at the
+    prior close (no gap), the first at the logged entry."""
+    if "Open" in future.columns:
+        return future["Open"].astype(float)
+    return future["Close"].astype(float).shift(1).fillna(entry)
+
+
 def resolve_entry(rec, prices, max_days=MAX_HOLD_DAYS):
-    """Score one journal entry against subsequent price action.
+    """Score one journal entry against subsequent price action, the way a
+    real order would have filled.
 
-    BUY: walk forward from the day after the signal. If the day's Low
-    touches the stop -> STOP HIT; if the High touches the target ->
-    TARGET HIT. If both happen the same day, assume STOP HIT (we can't
-    know intraday order, so score conservatively). After `max_days` with
-    neither -> EXPIRED at that day's close. Not enough days yet -> OPEN,
-    with the unrealized return so far.
+    BUY:
+      - Fill at the NEXT session's open (the signal is formed at the close,
+        so that close is not available to trade). If that session is locked
+        at the upper circuit, or opens already beyond the stop or target
+        (the plan is void), the trade is NO FILL.
+      - Each later session: an open through the stop exits at the OPEN
+        (a gap down fills worse than the stop); an open through the target
+        exits at the open (better). Otherwise an intraday touch exits at the
+        level. Both touched on one day → STOP HIT (intraday order is
+        unknown, score conservatively). A session locked at the lower
+        circuit can't be exited — the position carries to the next day.
+      - After `max_days` with neither → EXPIRED at that day's close.
+        Not enough days yet → OPEN, with the unrealized return so far.
+      - `outcome_return` is net of statutory costs and slippage;
+        `gross_return` is the price move alone.
 
-    SELL / HOLD: no stop/target to resolve — just record the forward
-    return after `max_days` (CLOSED) or so far (OPEN). For SELL, a
+    SELL / HOLD: no trade to resolve — just the forward return from the next
+    open to the close after `max_days` (CLOSED) or so far (OPEN). For SELL, a
     negative forward return means exiting was the right call."""
     signal_date = pd.Timestamp(rec["signal_date"])
     entry = float(rec["entry"])
     future = prices.loc[prices.index > signal_date].head(max_days)
+    empty = {"fill_price": np.nan, "exit_price": np.nan, "gross_return": np.nan}
 
     if future.empty:
-        return {"status": "OPEN", "days": 0, "outcome_return": np.nan, "exit_date": None}
+        return {"status": "OPEN", "days": 0, "outcome_return": np.nan,
+                "exit_date": None, **empty}
 
-    if rec["signal"] == "BUY":
-        stop, target = float(rec["stop"]), float(rec["target"])
-        for i, (dt, row) in enumerate(future.iterrows(), start=1):
-            hit_stop = float(row["Low"]) <= stop
-            hit_target = float(row["High"]) >= target
-            if hit_stop:  # checked first: same-day double-touch scores as STOP
-                return {"status": "STOP HIT", "days": i,
-                        "outcome_return": stop / entry - 1.0, "exit_date": dt}
-            if hit_target:
-                return {"status": "TARGET HIT", "days": i,
-                        "outcome_return": target / entry - 1.0, "exit_date": dt}
+    opens = _open_col(future, entry)
+    fill = float(opens.iloc[0])
+
+    if rec["signal"] != "BUY":
         last_close = float(future["Close"].iloc[-1])
-        if len(future) >= max_days:
-            return {"status": "EXPIRED", "days": max_days,
-                    "outcome_return": last_close / entry - 1.0,
-                    "exit_date": future.index[-1]}
-        return {"status": "OPEN", "days": len(future),
-                "outcome_return": last_close / entry - 1.0, "exit_date": None}
+        status = "CLOSED" if len(future) >= max_days else "OPEN"
+        ret = last_close / fill - 1.0
+        return {"status": status, "days": len(future), "outcome_return": ret,
+                "exit_date": future.index[-1] if status == "CLOSED" else None,
+                "fill_price": fill, "exit_price": last_close, "gross_return": ret}
+
+    stop, target = float(rec["stop"]), float(rec["target"])
+    up_locked, down_locked = locked_sessions(prices)
+    up_locked = up_locked.reindex(future.index, fill_value=False)
+    down_locked = down_locked.reindex(future.index, fill_value=False)
+
+    if bool(up_locked.iloc[0]) or not (stop < fill < target):
+        return {"status": "NO FILL", "days": 0, "outcome_return": np.nan,
+                "exit_date": None, **empty}
+
+    # Costs use liquidity known at the signal date (no lookahead).
+    buy_costs, sell_costs = side_costs(prices, cost_profile_for(rec.get("symbol")))
+    known = prices.index <= signal_date
+    buy_cost = float(buy_costs[known].iloc[-1]) if known.any() else float(buy_costs.iloc[0])
+    sell_cost = float(sell_costs[known].iloc[-1]) if known.any() else float(sell_costs.iloc[0])
+
+    def done(status, days, exit_price, exit_date):
+        net = exit_price * (1.0 - sell_cost) / (fill * (1.0 + buy_cost)) - 1.0
+        return {"status": status, "days": days, "outcome_return": net,
+                "exit_date": exit_date, "fill_price": fill,
+                "exit_price": float(exit_price), "gross_return": exit_price / fill - 1.0}
+
+    for i, (dt, row) in enumerate(future.iterrows(), start=1):
+        if bool(down_locked.loc[dt]):
+            continue  # frozen at the lower circuit: no buyers, can't exit today
+        day_open = float(opens.loc[dt])
+        if i > 1 and day_open <= stop:
+            return done("STOP HIT", i, day_open, dt)
+        if i > 1 and day_open >= target:
+            return done("TARGET HIT", i, day_open, dt)
+        if float(row["Low"]) <= stop:  # checked first: same-day double-touch → STOP
+            return done("STOP HIT", i, stop, dt)
+        if float(row["High"]) >= target:
+            return done("TARGET HIT", i, target, dt)
 
     last_close = float(future["Close"].iloc[-1])
-    status = "CLOSED" if len(future) >= max_days else "OPEN"
-    return {"status": status, "days": len(future),
-            "outcome_return": last_close / entry - 1.0,
-            "exit_date": future.index[-1] if status == "CLOSED" else None}
+    if len(future) >= max_days:
+        return done("EXPIRED", max_days, last_close, future.index[-1])
+    return done("OPEN", len(future), last_close, None)  # marked to the last close
+
+
+RESOLVED_COLUMNS = ["status", "days", "outcome_return", "fill_price",
+                    "exit_price", "gross_return"]
 
 
 def resolve_journal(journal_df, price_fetcher, max_days=MAX_HOLD_DAYS):
     """Resolve every entry. `price_fetcher(symbol)` must return an OHLC
     DataFrame. Symbols that fail to fetch are marked NO DATA."""
     if journal_df.empty:
-        return journal_df.assign(status=[], days=[], outcome_return=[])
+        return journal_df.assign(**{c: [] for c in RESOLVED_COLUMNS})
 
     results = []
     price_cache = {}
@@ -383,14 +434,15 @@ def resolve_journal(journal_df, price_fetcher, max_days=MAX_HOLD_DAYS):
                 price_cache[sym] = pd.DataFrame()
         prices = price_cache[sym]
         if prices is None or prices.empty:
-            results.append({"status": "NO DATA", "days": 0,
-                            "outcome_return": np.nan, "exit_date": None})
+            results.append({"status": "NO DATA", "days": 0, "outcome_return": np.nan,
+                            "exit_date": None, "fill_price": np.nan,
+                            "exit_price": np.nan, "gross_return": np.nan})
         else:
             results.append(resolve_entry(rec, prices, max_days))
 
     out = journal_df.copy().reset_index(drop=True)
     res = pd.DataFrame(results)
-    out[["status", "days", "outcome_return"]] = res[["status", "days", "outcome_return"]]
+    out[RESOLVED_COLUMNS] = res[RESOLVED_COLUMNS]
     return out
 
 
@@ -404,6 +456,7 @@ def scorecard(resolved_df):
         "n_buys": int(len(buys)),
         "n_resolved": int(len(done)),
         "n_open": int((buys["status"] == "OPEN").sum()),
+        "n_no_fill": int((buys["status"] == "NO FILL").sum()),
     }
     if len(done) == 0:
         out.update({"target_rate": np.nan, "stop_rate": np.nan,
