@@ -4,14 +4,14 @@
   "max_symbols": null,
   "n_requested": 2367,
   "runner": "github-actions",
-  "run_id": "37541379749",
-  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/37541379749",
+  "run_id": "37699454242",
+  "run_url": "https://github.com/soumoster86/StockAIPredictor/actions/runs/37699454242",
   "workflow": "Nightly rankings",
-  "generated_at": "2026-10-06T22:42:50Z",
-  "n_scored": 2085,
-  "n_failed": 282,
+  "generated_at": "2026-10-07T23:06:15Z",
+  "n_scored": 2081,
+  "n_failed": 286,
   "engine": "global",
-  "elapsed_s": 471.0,
+  "elapsed_s": 425.2,
   "source": "precomputed",
   "failures_sample": [
     {
@@ -64,6 +64,10 @@
     },
     {
       "symbol": "AHCL.NS",
+      "reason": "no/short data"
+    },
+    {
+      "symbol": "AIRAN.NS",
       "reason": "no/short data"
     },
     {
@@ -208,10 +212,6 @@
     },
     {
       "symbol": "BONLON.NS",
-      "reason": "no/short data"
-    },
-    {
-      "symbol": "BORANA.NS",
       "reason": "no/short data"
     }
   ],
